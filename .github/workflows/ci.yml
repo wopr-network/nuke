@@ -8,7 +8,7 @@ on:
 
 jobs:
   test:
-    runs-on: self-hosted
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
 
@@ -31,7 +31,7 @@ jobs:
         working-directory: packages/worker-runtime
 
   publish:
-    runs-on: self-hosted
+    runs-on: [self-hosted, Linux, X64]
     needs: test
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     permissions:
