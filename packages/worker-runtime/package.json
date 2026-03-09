@@ -1,0 +1,23 @@
+{
+  "name": "@wopr-network/worker-runtime",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "check": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.71"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}
