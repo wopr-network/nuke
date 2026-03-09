@@ -5,7 +5,7 @@ Agent container runtime for the WOPR pipeline.
 ## Structure
 
 - `packages/worker-runtime/` — HTTP server, SSE streaming, signal parsing
-- `workers/coder/` — Dockerfile for engineering discipline (git, gh, pnpm)
+- `workers/coder/` — Dockerfile for engineering discipline (git, gh)
 - `workers/devops/` — Dockerfile for devops discipline (git, curl)
 
 ## Check before committing

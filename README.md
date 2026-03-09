@@ -23,10 +23,11 @@ packages/
       server.ts         POST /dispatch, GET /health
       types.ts          DispatchRequest, NukeEvent (SSE event union)
       parse-signal.ts   Extract signal + artifacts from agent output
+      index.ts          Public export surface (parseSignal, makeHandler, types)
       main.ts           Entrypoint (createServer, listen on PORT)
 
 workers/
-  coder/Dockerfile      node + git + gh + pnpm (engineering discipline)
+  coder/Dockerfile      node + git + gh (engineering discipline)
   devops/Dockerfile     node + git + curl (devops discipline)
 ```
 
@@ -121,6 +122,9 @@ When the agent finishes, the worker-runtime collects all text output and scans i
 | `fixes_pushed` | `Fixes pushed: https://...` | `{ url }` |
 | `merged` | `Merged: https://...` | `{ url }` |
 | `cant_resolve` | `cant_resolve` | `{}` |
+| `start` | `start` | `{}` |
+| `design_needed` | `design_needed` | `{}` |
+| `design_ready` | `design_ready` | `{}` |
 
 Signals must appear on their own line. Last match wins. If no signal is recognized, the result contains `signal: "unknown"`.
 
@@ -207,6 +211,6 @@ NUKE is one piece of the WOPR agentic engineering pipeline:
 - [RADAR](https://github.com/wopr-network/radar) — detection and dispatch
 - **NUKE** (this repo) — agent containers
 - [NORAD](https://github.com/wopr-network/norad) — the command center dashboard
-- [SILO](https://github.com/wopr-network/bunker) — flow definitions and reference implementation
+- [Bunker](https://github.com/wopr-network/bunker) — flow definitions and reference implementation
 
 See [The Thesis](https://github.com/wopr-network/defcon/blob/main/docs/method/manifesto/the-thesis.md) for why this exists.
