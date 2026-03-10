@@ -1,8 +1,17 @@
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import type { IncomingMessage, RequestListener, ServerResponse } from "node:http";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { logger } from "./logger.js";
 import { parseSignal } from "./parse-signal.js";
 import type { DispatchRequest, NukeEvent } from "./types.js";
+
+const execFileAsync = promisify(execFile);
 
 const MODEL_MAP: Record<DispatchRequest["modelTier"], string> = {
   opus: "claude-opus-4-6",
@@ -11,6 +20,8 @@ const MODEL_MAP: Record<DispatchRequest["modelTier"], string> = {
 };
 
 const MAX_BODY_SIZE = 1024 * 1024;
+const WORKSPACE = "/workspace";
+const GH_TOKEN_PATH = "/run/secrets/gh-token";
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -34,11 +45,24 @@ function sendSSE(res: ServerResponse, event: NukeEvent): void {
   res.write(`data: ${JSON.stringify(event)}\n\n`);
 }
 
+/** Read GH token from /run/secrets, env, or credentials injection. */
+async function resolveGhToken(): Promise<string | null> {
+  // 1. Env var (set by credentials injection)
+  if (process.env.GH_TOKEN) return process.env.GH_TOKEN;
+  if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN;
+  // 2. Secrets file (mounted by NukeDispatcher)
+  if (existsSync(GH_TOKEN_PATH)) {
+    return (await readFile(GH_TOKEN_PATH, "utf-8")).trim();
+  }
+  return null;
+}
+
 async function handleDispatch(req: IncomingMessage, res: ServerResponse): Promise<void> {
   let body: string;
   try {
     body = await readBody(req);
-  } catch {
+  } catch (err) {
+    logger.warn(`[dispatch] body read failed`, { error: err instanceof Error ? err.message : String(err) });
     res.writeHead(400).end("Bad request");
     res.on("finish", () => req.destroy());
     return;
@@ -48,12 +72,14 @@ async function handleDispatch(req: IncomingMessage, res: ServerResponse): Promis
   try {
     parsed = JSON.parse(body);
   } catch {
+    logger.warn(`[dispatch] invalid JSON body`);
     res.writeHead(400).end("Invalid JSON");
     return;
   }
 
   const data = parsed as Record<string, unknown>;
   if (typeof data.prompt !== "string" || !data.prompt) {
+    logger.warn(`[dispatch] missing prompt field`);
     res.writeHead(400).end("Missing prompt");
     return;
   }
@@ -62,17 +88,32 @@ async function handleDispatch(req: IncomingMessage, res: ServerResponse): Promis
   const sessionId =
     data.newSession === true ? undefined : typeof data.sessionId === "string" ? data.sessionId : undefined;
 
+  const promptPreview = (data.prompt as string).slice(0, 200);
+  logger.info(`[dispatch] received`, {
+    modelTier,
+    model: MODEL_MAP[modelTier],
+    sessionId: sessionId ?? "(new)",
+    promptLength: (data.prompt as string).length,
+    promptPreview,
+  });
+
+  // We'll send the session event once we know the real SDK session ID.
+  // For resumes, we already know it; for new sessions, we generate one and
+  // pass it to the SDK via the `sessionId` option so both sides agree.
+  const resolvedSessionId = sessionId ?? randomUUID();
+  let sessionEventSent = false;
+
+  const allText: string[] = [];
+  const startTime = Date.now();
+  let toolUseCount = 0;
+  let textBlockCount = 0;
+
+  // Send SSE headers immediately
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
   });
-
-  // First event: session
-  const newSessionId = sessionId ?? randomUUID();
-  sendSSE(res, { type: "session", sessionId: newSessionId });
-
-  const allText: string[] = [];
 
   try {
     const env = Object.fromEntries(
@@ -98,22 +139,39 @@ async function handleDispatch(req: IncomingMessage, res: ServerResponse): Promis
         }
       : undefined;
 
+    if (mcpServers) {
+      logger.info(`[dispatch] MCP servers configured`, { servers: Object.keys(mcpServers) });
+    }
+
+    logger.info(`[dispatch] starting SDK query`, { model: MODEL_MAP[modelTier], resolvedSessionId });
+
     for await (const message of query({
       prompt: data.prompt as string,
       options: {
         model: MODEL_MAP[modelTier],
         permissionMode: "bypassPermissions",
-        ...(sessionId ? { resume: sessionId } : {}),
+        // For new sessions, set the session ID so the SDK uses our UUID.
+        // For resumes, pass the same ID via `resume`.
+        ...(sessionId ? { resume: sessionId } : { sessionId: resolvedSessionId }),
         ...(mcpServers ? { mcpServers } : {}),
         env,
         /* v8 ignore next */
-        stderr: (line: string) => process.stderr.write(`[sdk] ${line}\n`),
+        stderr: (line: string) => logger.debug(`[sdk:stderr] ${line}`),
       },
     })) {
       const msg = message as { type: string };
 
       if (msg.type === "system") {
-        const m = msg as { type: string; subtype: string };
+        const m = msg as { type: string; subtype: string; session_id?: string };
+        // Capture the real session_id from the SDK init message
+        const sdkSessionId = m.session_id ?? resolvedSessionId;
+        if (!sessionEventSent) {
+          sendSSE(res, { type: "session", sessionId: sdkSessionId });
+          sessionEventSent = true;
+          logger.info(`[dispatch] session started`, { sessionId: sdkSessionId, subtype: m.subtype });
+        } else {
+          logger.info(`[dispatch] system event`, { subtype: m.subtype, sessionId: sdkSessionId });
+        }
         sendSSE(res, { type: "system", subtype: m.subtype });
       } else if (msg.type === "assistant") {
         const m = msg as { type: string; message: { content: unknown[] } };
@@ -121,11 +179,23 @@ async function handleDispatch(req: IncomingMessage, res: ServerResponse): Promis
           const b = block as { type: string };
           if (b.type === "tool_use") {
             const t = b as { type: string; name: string; input: Record<string, unknown> };
+            toolUseCount++;
+            logger.info(`[dispatch] tool_use`, {
+              name: t.name,
+              toolUseCount,
+              inputKeys: Object.keys(t.input),
+            });
             sendSSE(res, { type: "tool_use", name: t.name, input: t.input });
           } else if (b.type === "text") {
             const t = b as { type: string; text: string };
             if (t.text) {
+              textBlockCount++;
               allText.push(t.text);
+              logger.debug(`[dispatch] text block`, {
+                textBlockCount,
+                length: t.text.length,
+                preview: t.text.slice(0, 120),
+              });
               sendSSE(res, { type: "text", text: t.text });
             }
           }
@@ -139,6 +209,18 @@ async function handleDispatch(req: IncomingMessage, res: ServerResponse): Promis
           total_cost_usd: number | null;
         };
         const { signal, artifacts } = parseSignal(allText.join("\n"));
+        const elapsed = Date.now() - startTime;
+        logger.info(`[dispatch] result`, {
+          subtype: m.subtype,
+          isError: m.is_error,
+          stopReason: m.stop_reason,
+          costUsd: m.total_cost_usd,
+          signal,
+          artifactKeys: Object.keys(artifacts),
+          toolUseCount,
+          textBlockCount,
+          elapsedMs: elapsed,
+        });
         sendSSE(res, {
           type: "result",
           subtype: m.subtype,
@@ -151,13 +233,208 @@ async function handleDispatch(req: IncomingMessage, res: ServerResponse): Promis
       }
     }
   } catch (err) {
+    const elapsed = Date.now() - startTime;
+    logger.error(`[dispatch] SDK error`, {
+      error: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
+      toolUseCount,
+      textBlockCount,
+      elapsedMs: elapsed,
+    });
     sendSSE(res, {
       type: "error",
       message: err instanceof Error ? err.message : String(err),
     });
   }
 
+  const totalElapsed = Date.now() - startTime;
+  logger.info(`[dispatch] stream complete`, {
+    sessionId: resolvedSessionId,
+    toolUseCount,
+    textBlockCount,
+    totalElapsedMs: totalElapsed,
+  });
   res.end();
+}
+
+async function handleCredentials(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  logger.info(`[credentials] receiving credentials`);
+
+  let body: string;
+  try {
+    body = await readBody(req);
+  } catch (err) {
+    logger.warn(`[credentials] body read failed`, { error: err instanceof Error ? err.message : String(err) });
+    res.writeHead(400).end("Bad request");
+    return;
+  }
+
+  let data: Record<string, unknown>;
+  try {
+    data = JSON.parse(body) as Record<string, unknown>;
+    if (typeof data !== "object" || data === null || Array.isArray(data)) {
+      throw new Error("Expected object");
+    }
+  } catch {
+    logger.warn(`[credentials] invalid JSON body`);
+    res.writeHead(400).end("Invalid JSON");
+    return;
+  }
+
+  logger.info(`[credentials] credential types received`, { types: Object.keys(data) });
+
+  const results: Record<string, boolean> = {};
+
+  // Claude credentials
+  if (data.claude != null) {
+    const claudeDir = join(homedir(), ".claude");
+    await mkdir(claudeDir, { recursive: true });
+    await writeFile(join(claudeDir, ".credentials.json"), JSON.stringify(data.claude), "utf-8");
+    results.claude = true;
+    logger.info(`[credentials] claude credentials written`, { path: join(claudeDir, ".credentials.json") });
+  }
+
+  // GitHub token — set env var so gh CLI and git pick it up
+  if (data.github != null) {
+    const gh = data.github as Record<string, unknown>;
+    const token = typeof gh === "string" ? gh : (gh.token as string);
+    if (token) {
+      process.env.GH_TOKEN = token;
+      process.env.GITHUB_TOKEN = token;
+      results.github = true;
+      logger.info(`[credentials] github token set`, { tokenLength: token.length });
+    } else {
+      logger.warn(`[credentials] github payload present but no token found`);
+    }
+  }
+
+  if (Object.keys(results).length === 0) {
+    logger.warn(`[credentials] no recognized credential types`, { receivedKeys: Object.keys(data) });
+    res.writeHead(400).end("No recognized credential types (expected: claude, github)");
+    return;
+  }
+
+  logger.info(`[credentials] injection complete`, { results });
+  res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(results));
+}
+
+async function handleCheckout(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  logger.info(`[checkout] receiving checkout request`);
+
+  let body: string;
+  try {
+    body = await readBody(req);
+  } catch (err) {
+    logger.warn(`[checkout] body read failed`, { error: err instanceof Error ? err.message : String(err) });
+    res.writeHead(400).end("Bad request");
+    return;
+  }
+
+  let data: Record<string, unknown>;
+  try {
+    data = JSON.parse(body) as Record<string, unknown>;
+  } catch {
+    logger.warn(`[checkout] invalid JSON body`);
+    res.writeHead(400).end("Invalid JSON");
+    return;
+  }
+
+  // Accept either `repos` (array) or `repo` (string, backwards compat)
+  const repoList: string[] = Array.isArray(data.repos)
+    ? (data.repos as string[])
+    : typeof data.repo === "string"
+      ? [data.repo as string]
+      : [];
+  const branch = data.branch as string | undefined;
+  const entityId = data.entityId as string | undefined;
+
+  if (repoList.length === 0) {
+    logger.warn(`[checkout] missing required field: repo or repos`);
+    res.writeHead(400).end("Missing required field: repo or repos");
+    return;
+  }
+
+  // When entityId is provided, nest repos under WORKSPACE/entityId/
+  const baseDir = entityId ? join(WORKSPACE, entityId) : WORKSPACE;
+
+  logger.info(`[checkout] starting`, {
+    repos: repoList,
+    branch: branch ?? "(default)",
+    baseDir,
+    entityId: entityId ?? "(none)",
+  });
+
+  try {
+    // Build env with GH token for gh/git auth
+    const env = { ...process.env } as Record<string, string>;
+    const ghToken = await resolveGhToken();
+    if (ghToken) {
+      env.GH_TOKEN = ghToken;
+      env.GITHUB_TOKEN = ghToken;
+      logger.info(`[checkout] GH token resolved`, { tokenLength: ghToken.length });
+    } else {
+      logger.warn(`[checkout] no GH token available`);
+    }
+
+    await mkdir(baseDir, { recursive: true });
+
+    const worktrees: Record<string, string> = {};
+    const targetBranch = branch ?? "main";
+
+    for (const repo of repoList) {
+      const repoName = repo.split("/").pop() ?? repo;
+      const worktreePath = join(baseDir, repoName);
+
+      // Clone if not already present
+      if (!existsSync(worktreePath)) {
+        logger.info(`[checkout] cloning repo`, { repo, worktreePath });
+        const cloneStart = Date.now();
+        await execFileAsync("gh", ["repo", "clone", repo, worktreePath], { env });
+        logger.info(`[checkout] clone complete`, { repo, elapsedMs: Date.now() - cloneStart });
+      } else {
+        logger.info(`[checkout] repo exists, fetching`, { repo, worktreePath });
+        await execFileAsync("git", ["-C", worktreePath, "fetch", "origin"], { env });
+        logger.info(`[checkout] fetch complete`, { repo });
+      }
+
+      // Create and checkout branch
+      if (branch) {
+        try {
+          await execFileAsync("git", ["-C", worktreePath, "checkout", branch], { env });
+          logger.info(`[checkout] checked out existing branch`, { repo, branch });
+        } catch {
+          await execFileAsync("git", ["-C", worktreePath, "checkout", "-b", branch], { env });
+          logger.info(`[checkout] created new branch`, { repo, branch });
+        }
+      }
+
+      worktrees[repoName] = worktreePath;
+    }
+
+    logger.info(`[checkout] complete`, { repos: repoList, branch: targetBranch, worktrees });
+
+    // Return worktrees map. For single-repo backwards compat, also include flat fields.
+    const firstRepoName = repoList[0].split("/").pop() ?? repoList[0];
+    res
+      .writeHead(200, { "Content-Type": "application/json" })
+      .end(
+        JSON.stringify({
+          worktrees,
+          worktreePath: worktrees[firstRepoName],
+          codebasePath: worktrees[firstRepoName],
+          branch: targetBranch,
+        }),
+      );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error(`[checkout] failed`, {
+      repos: repoList,
+      branch,
+      error: msg,
+      stack: err instanceof Error ? err.stack : undefined,
+    });
+    res.writeHead(500, { "Content-Type": "application/json" }).end(JSON.stringify({ error: msg }));
+  }
 }
 
 export function makeHandler(): RequestListener {
@@ -169,11 +446,24 @@ export function makeHandler(): RequestListener {
       return;
     }
 
+    logger.info(`[http] ${method} ${url}`);
+
+    if (method === "POST" && url === "/credentials") {
+      await handleCredentials(req, res);
+      return;
+    }
+
+    if (method === "POST" && url === "/checkout") {
+      await handleCheckout(req, res);
+      return;
+    }
+
     if (method === "POST" && url === "/dispatch") {
       await handleDispatch(req, res);
       return;
     }
 
+    logger.warn(`[http] not found`, { method, url });
     res.writeHead(404).end("Not found");
   };
 }
