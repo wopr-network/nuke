@@ -61,6 +61,63 @@ const SIGNAL_PATTERNS: SignalPattern[] = [
     signal: "cant_resolve",
     extractArtifacts: () => ({}),
   },
+  // wopr-changeset: documenting + learning bare-word signals
+  {
+    pattern: /^docs_ready\r?$/,
+    signal: "docs_ready",
+    extractArtifacts: () => ({}),
+  },
+  {
+    pattern: /^cant_document\r?$/,
+    signal: "cant_document",
+    extractArtifacts: () => ({}),
+  },
+  {
+    pattern: /^learning_complete\r?$/,
+    signal: "learning_complete",
+    extractArtifacts: () => ({}),
+  },
+  {
+    pattern: /^cant_learn\r?$/,
+    signal: "cant_learn",
+    extractArtifacts: () => ({}),
+  },
+  // wopr-incident: structured signals with artifact extraction
+  {
+    pattern: /Triaged:\s*(\S+)\s+severity=(P[123])/,
+    signal: "triaged",
+    extractArtifacts: (m) => ({ issueKey: m[1], severity: m[2] }),
+  },
+  {
+    pattern: /Root cause:\s*(\S+)\s*[—–-]\s*(.+)/,
+    signal: "root_cause",
+    extractArtifacts: (m) => ({ issueKey: m[1], rootCause: m[2].trim() }),
+  },
+  {
+    pattern: /Escalate:\s*(\S+)\s*[—–-]\s*(.+)/,
+    signal: "escalate",
+    extractArtifacts: (m) => ({ issueKey: m[1], reason: m[2].trim() }),
+  },
+  {
+    pattern: /Mitigated:\s*(\S+)/,
+    signal: "mitigated",
+    extractArtifacts: (m) => ({ issueKey: m[1] }),
+  },
+  {
+    pattern: /Mitigation failed:\s*(\S+)\s*[—–-]\s*(.+)/,
+    signal: "mitigation_failed",
+    extractArtifacts: (m) => ({ issueKey: m[1], reason: m[2].trim() }),
+  },
+  {
+    pattern: /Resolved:\s*(\S+)\s*[—–-]\s*(https:\/\/[^\s]+)/,
+    signal: "resolved",
+    extractArtifacts: (m) => ({ issueKey: m[1], prUrl: m[2] }),
+  },
+  {
+    pattern: /Postmortem complete:\s*(\S+)/,
+    signal: "postmortem_complete",
+    extractArtifacts: (m) => ({ issueKey: m[1] }),
+  },
 ];
 
 export function parseSignal(output: string): {

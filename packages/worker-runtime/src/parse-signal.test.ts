@@ -88,4 +88,74 @@ describe("parseSignal", () => {
   it("handles windows line endings", () => {
     expect(parseSignal("start\r")).toEqual({ signal: "start", artifacts: {} });
   });
+
+  // wopr-changeset: documenting + learning
+  it("parses docs_ready", () => {
+    expect(parseSignal("Updated the README.\n\ndocs_ready")).toEqual({ signal: "docs_ready", artifacts: {} });
+  });
+
+  it("parses cant_document", () => {
+    expect(parseSignal("cant_document")).toEqual({ signal: "cant_document", artifacts: {} });
+  });
+
+  it("parses learning_complete", () => {
+    expect(parseSignal("learning_complete")).toEqual({ signal: "learning_complete", artifacts: {} });
+  });
+
+  it("parses cant_learn", () => {
+    expect(parseSignal("cant_learn")).toEqual({ signal: "cant_learn", artifacts: {} });
+  });
+
+  it("does not match docs_ready mid-line", () => {
+    expect(parseSignal("The docs_ready signal was emitted")).toEqual({ signal: "unknown", artifacts: {} });
+  });
+
+  // wopr-incident signals
+  it("parses triaged with severity", () => {
+    const { signal, artifacts } = parseSignal("Triaged: WOP-500 severity=P1");
+    expect(signal).toBe("triaged");
+    expect(artifacts).toEqual({ issueKey: "WOP-500", severity: "P1" });
+  });
+
+  it("parses triaged P3", () => {
+    const { signal, artifacts } = parseSignal("Triaged: WOP-501 severity=P3");
+    expect(signal).toBe("triaged");
+    expect(artifacts).toEqual({ issueKey: "WOP-501", severity: "P3" });
+  });
+
+  it("parses root_cause", () => {
+    const { signal, artifacts } = parseSignal("Root cause: WOP-500 — null pointer in auth middleware");
+    expect(signal).toBe("root_cause");
+    expect(artifacts).toEqual({ issueKey: "WOP-500", rootCause: "null pointer in auth middleware" });
+  });
+
+  it("parses escalate", () => {
+    const { signal, artifacts } = parseSignal("Escalate: WOP-500 — needs human expertise");
+    expect(signal).toBe("escalate");
+    expect(artifacts).toEqual({ issueKey: "WOP-500", reason: "needs human expertise" });
+  });
+
+  it("parses mitigated", () => {
+    const { signal, artifacts } = parseSignal("Mitigated: WOP-500");
+    expect(signal).toBe("mitigated");
+    expect(artifacts).toEqual({ issueKey: "WOP-500" });
+  });
+
+  it("parses mitigation_failed", () => {
+    const { signal, artifacts } = parseSignal("Mitigation failed: WOP-500 — rollback script not found");
+    expect(signal).toBe("mitigation_failed");
+    expect(artifacts).toEqual({ issueKey: "WOP-500", reason: "rollback script not found" });
+  });
+
+  it("parses resolved with PR URL", () => {
+    const { signal, artifacts } = parseSignal("Resolved: WOP-500 — https://github.com/wopr-network/radar/pull/99");
+    expect(signal).toBe("resolved");
+    expect(artifacts).toEqual({ issueKey: "WOP-500", prUrl: "https://github.com/wopr-network/radar/pull/99" });
+  });
+
+  it("parses postmortem_complete", () => {
+    const { signal, artifacts } = parseSignal("Postmortem complete: WOP-500");
+    expect(signal).toBe("postmortem_complete");
+    expect(artifacts).toEqual({ issueKey: "WOP-500" });
+  });
 });
