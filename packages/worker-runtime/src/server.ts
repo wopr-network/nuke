@@ -50,9 +50,10 @@ async function resolveGhToken(): Promise<string | null> {
   // 1. Env var (set by credentials injection)
   if (process.env.GH_TOKEN) return process.env.GH_TOKEN;
   if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN;
-  // 2. Secrets file (mounted by NukeDispatcher)
-  if (existsSync(GH_TOKEN_PATH)) {
-    return (await readFile(GH_TOKEN_PATH, "utf-8")).trim();
+  // 2. Secrets file (mounted by NukeDispatcher; overridable in tests via GH_TOKEN_PATH_OVERRIDE)
+  const tokenPath = process.env.GH_TOKEN_PATH_OVERRIDE ?? GH_TOKEN_PATH;
+  if (existsSync(tokenPath)) {
+    return (await readFile(tokenPath, "utf-8")).trim();
   }
   return null;
 }
@@ -97,23 +98,22 @@ async function handleDispatch(req: IncomingMessage, res: ServerResponse): Promis
     promptPreview,
   });
 
-  // We'll send the session event once we know the real SDK session ID.
-  // For resumes, we already know it; for new sessions, we generate one and
-  // pass it to the SDK via the `sessionId` option so both sides agree.
+  // For new sessions, generate a UUID and pass it to the SDK so both sides agree.
+  // For resumes, the caller-supplied sessionId is used as-is.
   const resolvedSessionId = sessionId ?? randomUUID();
-  let sessionEventSent = false;
 
   const allText: string[] = [];
   const startTime = Date.now();
   let toolUseCount = 0;
   let textBlockCount = 0;
 
-  // Send SSE headers immediately
+  // Send SSE headers immediately, then emit session event as first payload.
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
   });
+  sendSSE(res, { type: "session", sessionId: resolvedSessionId });
 
   try {
     const env = Object.fromEntries(
@@ -163,15 +163,7 @@ async function handleDispatch(req: IncomingMessage, res: ServerResponse): Promis
 
       if (msg.type === "system") {
         const m = msg as { type: string; subtype: string; session_id?: string };
-        // Capture the real session_id from the SDK init message
-        const sdkSessionId = m.session_id ?? resolvedSessionId;
-        if (!sessionEventSent) {
-          sendSSE(res, { type: "session", sessionId: sdkSessionId });
-          sessionEventSent = true;
-          logger.info(`[dispatch] session started`, { sessionId: sdkSessionId, subtype: m.subtype });
-        } else {
-          logger.info(`[dispatch] system event`, { subtype: m.subtype, sessionId: sdkSessionId });
-        }
+        logger.info(`[dispatch] system event`, { subtype: m.subtype, sessionId: resolvedSessionId });
         sendSSE(res, { type: "system", subtype: m.subtype });
       } else if (msg.type === "assistant") {
         const m = msg as { type: string; message: { content: unknown[] } };
@@ -355,7 +347,8 @@ async function handleCheckout(req: IncomingMessage, res: ServerResponse): Promis
   }
 
   // When entityId is provided, nest repos under WORKSPACE/entityId/
-  const baseDir = entityId ? join(WORKSPACE, entityId) : WORKSPACE;
+  const workspace = process.env.NUKE_WORKSPACE ?? WORKSPACE;
+  const baseDir = entityId ? join(workspace, entityId) : workspace;
 
   logger.info(`[checkout] starting`, {
     repos: repoList,
@@ -389,7 +382,13 @@ async function handleCheckout(req: IncomingMessage, res: ServerResponse): Promis
       if (!existsSync(worktreePath)) {
         logger.info(`[checkout] cloning repo`, { repo, worktreePath });
         const cloneStart = Date.now();
-        await execFileAsync("gh", ["repo", "clone", repo, worktreePath], { env });
+        // Use plain git clone for local paths; gh repo clone for remote OWNER/REPO refs
+        const isLocalPath = repo.startsWith("/") || repo.startsWith("./") || repo.startsWith("../");
+        if (isLocalPath) {
+          await execFileAsync("git", ["clone", repo, worktreePath], { env });
+        } else {
+          await execFileAsync("gh", ["repo", "clone", repo, worktreePath], { env });
+        }
         logger.info(`[checkout] clone complete`, { repo, elapsedMs: Date.now() - cloneStart });
       } else {
         logger.info(`[checkout] repo exists, fetching`, { repo, worktreePath });
