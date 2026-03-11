@@ -448,6 +448,24 @@ describe("POST /checkout", () => {
     expect(res.status).toBe(400);
   });
 
+  it("returns 400 for flag-like repo with leading whitespace (bypass attempt)", async () => {
+    const res = await fetch(`${url}/checkout`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo: "  --upload-pack=evil" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 for flag-like branch value", async () => {
+    const res = await fetch(`${url}/checkout`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo: "owner/some-repo", branch: "--force" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
   it("returns 400 when repo field is missing but other fields present", async () => {
     const res = await fetch(`${url}/checkout`, {
       method: "POST",
