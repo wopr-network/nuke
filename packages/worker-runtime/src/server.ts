@@ -333,12 +333,12 @@ async function handleCheckout(req: IncomingMessage, res: ServerResponse): Promis
 
   // Accept either `repos` (array) or `repo` (string, backwards compat)
   const repoList: string[] = Array.isArray(data.repos)
-    ? (data.repos as string[])
+    ? (data.repos as string[]).map((r) => String(r).trim())
     : typeof data.repo === "string"
-      ? [data.repo as string]
+      ? [data.repo.trim()]
       : [];
-  const branch = data.branch as string | undefined;
-  const entityId = data.entityId as string | undefined;
+  const branch = typeof data.branch === "string" ? data.branch.trim() || undefined : undefined;
+  const entityId = typeof data.entityId === "string" ? data.entityId : undefined;
 
   if (repoList.length === 0) {
     logger.warn(`[checkout] missing required field: repo or repos`);
@@ -346,9 +346,34 @@ async function handleCheckout(req: IncomingMessage, res: ServerResponse): Promis
     return;
   }
 
+  // Reject repo values that start with '-' (after trim) to prevent flag injection into git/gh
+  const flagLikeRepo = repoList.find((r) => r.startsWith("-"));
+  if (flagLikeRepo) {
+    logger.warn(`[checkout] rejected flag-like repo value`, { repo: flagLikeRepo });
+    res.writeHead(400).end("Invalid repo value");
+    return;
+  }
+
+  // Reject branch values that start with '-' to prevent flag injection into git checkout
+  if (branch?.startsWith("-")) {
+    logger.warn(`[checkout] rejected flag-like branch value`, { branch });
+    res.writeHead(400).end("Invalid branch value");
+    return;
+  }
+
+  // Sanitize entityId to prevent path traversal — only allow safe path segment characters
+  const safeEntityId = entityId
+    ? entityId.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/^\.+/, "") || undefined
+    : undefined;
+  if (entityId && !safeEntityId) {
+    logger.warn(`[checkout] rejected unsafe entityId`, { entityId });
+    res.writeHead(400).end("Invalid entityId value");
+    return;
+  }
+
   // When entityId is provided, nest repos under WORKSPACE/entityId/
   const workspace = process.env.NUKE_WORKSPACE ?? WORKSPACE;
-  const baseDir = entityId ? join(workspace, entityId) : workspace;
+  const baseDir = safeEntityId ? join(workspace, safeEntityId) : workspace;
 
   logger.info(`[checkout] starting`, {
     repos: repoList,
@@ -371,11 +396,14 @@ async function handleCheckout(req: IncomingMessage, res: ServerResponse): Promis
 
     await mkdir(baseDir, { recursive: true });
 
-    const worktrees: Record<string, string> = {};
+    const worktrees: Record<string, string> = Object.create(null) as Record<string, string>;
     const targetBranch = branch ?? "main";
 
     for (const repo of repoList) {
-      const repoName = repo.split("/").pop() ?? repo;
+      // Sanitize repoName: take the final path segment, strip leading dots (prevents `..`
+      // traversal), replace unsafe chars to prevent prototype pollution
+      const rawName = repo.split("/").pop() ?? repo;
+      const repoName = rawName.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/^\.+/, "") || "repo";
       const worktreePath = join(baseDir, repoName);
 
       // Clone if not already present
@@ -413,7 +441,8 @@ async function handleCheckout(req: IncomingMessage, res: ServerResponse): Promis
     logger.info(`[checkout] complete`, { repos: repoList, branch: targetBranch, worktrees });
 
     // Return worktrees map. For single-repo backwards compat, also include flat fields.
-    const firstRepoName = repoList[0].split("/").pop() ?? repoList[0];
+    const firstRawName = repoList[0].split("/").pop() ?? repoList[0];
+    const firstRepoName = firstRawName.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/^\.+/, "") || "repo";
     res.writeHead(200, { "Content-Type": "application/json" }).end(
       JSON.stringify({
         worktrees,

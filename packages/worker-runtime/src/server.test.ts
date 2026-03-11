@@ -430,6 +430,42 @@ describe("POST /checkout", () => {
     expect(res.status).toBe(200);
   });
 
+  it("returns 400 for flag-like repo value (command injection prevention)", async () => {
+    const res = await fetch(`${url}/checkout`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo: "--upload-pack=evil" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 for flag-like repo in repos array", async () => {
+    const res = await fetch(`${url}/checkout`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repos: ["valid/repo", "--malicious"] }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 for flag-like repo with leading whitespace (bypass attempt)", async () => {
+    const res = await fetch(`${url}/checkout`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo: "  --upload-pack=evil" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 for flag-like branch value", async () => {
+    const res = await fetch(`${url}/checkout`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo: "owner/some-repo", branch: "--force" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
   it("returns 400 when repo field is missing but other fields present", async () => {
     const res = await fetch(`${url}/checkout`, {
       method: "POST",
@@ -625,6 +661,16 @@ describe("POST /checkout", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { worktreePath: string };
     expect(body.worktreePath).toContain("entity-123");
+  });
+
+  it("rejects entityId that reduces to empty after sanitization", async () => {
+    const res = await fetch(`${url}/checkout`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo: "owner/repo", entityId: "..." }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.text()).toBe("Invalid entityId value");
   });
 
   it("clones multiple local repos and returns worktrees map", async () => {
