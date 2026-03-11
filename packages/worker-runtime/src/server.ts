@@ -337,7 +337,7 @@ async function handleCheckout(req: IncomingMessage, res: ServerResponse): Promis
     : typeof data.repo === "string"
       ? [data.repo.trim()]
       : [];
-  const branch = typeof data.branch === "string" ? data.branch.trim() : undefined;
+  const branch = typeof data.branch === "string" ? data.branch.trim() || undefined : undefined;
   const entityId = typeof data.entityId === "string" ? data.entityId : undefined;
 
   if (repoList.length === 0) {
