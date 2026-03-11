@@ -362,7 +362,9 @@ async function handleCheckout(req: IncomingMessage, res: ServerResponse): Promis
   }
 
   // Sanitize entityId to prevent path traversal — only allow safe path segment characters
-  const safeEntityId = entityId ? entityId.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/^\.+/, "") || undefined : undefined;
+  const safeEntityId = entityId
+    ? entityId.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/^\.+/, "") || undefined
+    : undefined;
   if (entityId && !safeEntityId) {
     logger.warn(`[checkout] rejected unsafe entityId`, { entityId });
     res.writeHead(400).end("Invalid entityId value");
