@@ -25,3 +25,14 @@ This runs biome lint + typecheck across all packages.
 - **Port**: Defaults to `PORT=8080`. RADAR maps this to a dynamic host port via `docker run -p 0:8080`.
 - **Body size limit**: `/dispatch` rejects request bodies over 1MB.
 - **CLAUDECODE env var**: Explicitly deleted from the env passed to `query()` to prevent SDK conflicts.
+
+## Version Control: Prefer jj
+
+Use `jj` (Jujutsu) for all VCS operations instead of `git`:
+- `jj status`, `jj diff`, `jj log` for inspection
+- `jj new` to start a change, `jj describe` to set the message
+- `jj commit` to commit, `jj push` to push
+- `jj squash`, `jj rebase`, `jj edit` for history manipulation
+
+Fall back to `git` only for operations not yet supported by `jj`.
+
