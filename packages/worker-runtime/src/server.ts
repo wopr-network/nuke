@@ -346,6 +346,14 @@ async function handleCheckout(req: IncomingMessage, res: ServerResponse): Promis
     return;
   }
 
+  // Reject repo values that start with '-' to prevent flag injection into git/gh commands
+  const flagLikeRepo = repoList.find((r) => r.startsWith("-"));
+  if (flagLikeRepo) {
+    logger.warn(`[checkout] rejected flag-like repo value`, { repo: flagLikeRepo });
+    res.writeHead(400).end("Invalid repo value");
+    return;
+  }
+
   // When entityId is provided, nest repos under WORKSPACE/entityId/
   const workspace = process.env.NUKE_WORKSPACE ?? WORKSPACE;
   const baseDir = entityId ? join(workspace, entityId) : workspace;
@@ -371,11 +379,14 @@ async function handleCheckout(req: IncomingMessage, res: ServerResponse): Promis
 
     await mkdir(baseDir, { recursive: true });
 
-    const worktrees: Record<string, string> = {};
+    const worktrees: Record<string, string> = Object.create(null) as Record<string, string>;
     const targetBranch = branch ?? "main";
 
     for (const repo of repoList) {
-      const repoName = repo.split("/").pop() ?? repo;
+      // Sanitize repoName: strip leading dots/slashes to get the final path segment,
+      // replace non-alphanumeric chars (except - and _) to prevent prototype pollution
+      const rawName = repo.split("/").pop() ?? repo;
+      const repoName = rawName.replace(/[^a-zA-Z0-9._-]/g, "_") || "repo";
       const worktreePath = join(baseDir, repoName);
 
       // Clone if not already present
@@ -413,7 +424,8 @@ async function handleCheckout(req: IncomingMessage, res: ServerResponse): Promis
     logger.info(`[checkout] complete`, { repos: repoList, branch: targetBranch, worktrees });
 
     // Return worktrees map. For single-repo backwards compat, also include flat fields.
-    const firstRepoName = repoList[0].split("/").pop() ?? repoList[0];
+    const firstRawName = repoList[0].split("/").pop() ?? repoList[0];
+    const firstRepoName = firstRawName.replace(/[^a-zA-Z0-9._-]/g, "_") || "repo";
     res.writeHead(200, { "Content-Type": "application/json" }).end(
       JSON.stringify({
         worktrees,
