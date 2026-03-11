@@ -663,6 +663,16 @@ describe("POST /checkout", () => {
     expect(body.worktreePath).toContain("entity-123");
   });
 
+  it("rejects entityId that reduces to empty after sanitization", async () => {
+    const res = await fetch(`${url}/checkout`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo: "owner/repo", entityId: "..." }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.text()).toBe("Invalid entityId value");
+  });
+
   it("clones multiple local repos and returns worktrees map", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "nuke-multi-"));
 
