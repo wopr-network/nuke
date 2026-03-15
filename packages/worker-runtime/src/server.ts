@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { evaluateGate, type GateRequest } from "./gates.js";
 import { logger } from "./logger.js";
 import { parseSignal } from "./parse-signal.js";
 import type { DispatchRequest, HolyshipperEvent } from "./types.js";
@@ -463,6 +464,51 @@ async function handleCheckout(req: IncomingMessage, res: ServerResponse): Promis
   }
 }
 
+async function handleGate(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  let body: string;
+  try {
+    body = await readBody(req);
+  } catch (err) {
+    logger.warn(`[gate] body read failed`, { error: err instanceof Error ? err.message : String(err) });
+    res.writeHead(400).end("Bad request");
+    return;
+  }
+
+  let data: unknown;
+  try {
+    data = JSON.parse(body);
+  } catch {
+    logger.warn(`[gate] invalid JSON body`);
+    res.writeHead(400).end("Invalid JSON");
+    return;
+  }
+
+  const request = data as Record<string, unknown>;
+  if (typeof request.gateId !== "string" || !request.gateId) {
+    res.writeHead(400).end("Missing gateId");
+    return;
+  }
+  if (typeof request.entityId !== "string" || !request.entityId) {
+    res.writeHead(400).end("Missing entityId");
+    return;
+  }
+  if (typeof request.op !== "string" || !request.op) {
+    res.writeHead(400).end("Missing op");
+    return;
+  }
+
+  const gateRequest: GateRequest = {
+    gateId: request.gateId,
+    entityId: request.entityId,
+    op: request.op,
+    params: (request.params as Record<string, unknown>) ?? {},
+    timeoutMs: typeof request.timeoutMs === "number" ? request.timeoutMs : undefined,
+  };
+
+  const result = await evaluateGate(gateRequest);
+  res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(result));
+}
+
 export function makeHandler(): RequestListener {
   return async (req, res) => {
     const { method, url } = req;
@@ -486,6 +532,11 @@ export function makeHandler(): RequestListener {
 
     if (method === "POST" && url === "/dispatch") {
       await handleDispatch(req, res);
+      return;
+    }
+
+    if (method === "POST" && url === "/gate") {
+      await handleGate(req, res);
       return;
     }
 

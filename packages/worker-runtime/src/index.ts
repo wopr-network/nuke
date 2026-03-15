@@ -1,3 +1,5 @@
+export { clearHandlers, evaluateGate, hasHandler, listHandlers, registerHandler, registerHandlers } from "./gates.js";
+export type { GateRequest, GateResult, PrimitiveHandler } from "./gates.js";
 export { parseSignal } from "./parse-signal.js";
 export { makeHandler } from "./server.js";
 export type {
