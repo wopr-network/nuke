@@ -39,7 +39,7 @@ export interface GateResult {
 export type PrimitiveHandler = (
   op: string,
   params: Record<string, unknown>,
-  context: { entityId: string },
+  context: { entityId: string; signal?: AbortSignal },
 ) => Promise<{ outcome: string; message?: string }>;
 
 // ─── Registry ────────────────────────────────────────────────────────────────
@@ -116,13 +116,17 @@ export async function evaluateGate(request: GateRequest): Promise<GateResult> {
     };
   }
 
+  const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<{ outcome: string; message?: string }>((resolve) => {
-    timer = setTimeout(() => resolve({ outcome: "timeout", message: `Gate timed out after ${timeout}ms` }), timeout);
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve({ outcome: "timeout", message: `Gate timed out after ${timeout}ms` });
+    }, timeout);
   });
 
   try {
-    const result = await Promise.race([handler(op, params, { entityId }), timeoutPromise]);
+    const result = await Promise.race([handler(op, params, { entityId, signal: controller.signal }), timeoutPromise]);
 
     const durationMs = Date.now() - start;
     logger.info(`[gates] gate evaluated`, {

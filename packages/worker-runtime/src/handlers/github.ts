@@ -19,7 +19,7 @@ const GITHUB_HEADERS = (token: string) => ({
 });
 
 /** vcs.ci_status — check CI status on a commit ref */
-export const ciStatus: PrimitiveHandler = async (_op, params) => {
+export const ciStatus: PrimitiveHandler = async (_op, params, ctx) => {
   const token = getToken();
   const repo = params.repo as string;
   const ref = params.ref as string;
@@ -27,6 +27,7 @@ export const ciStatus: PrimitiveHandler = async (_op, params) => {
 
   const res = await fetch(`https://api.github.com/repos/${repo}/commits/${ref}/check-runs`, {
     headers: GITHUB_HEADERS(token),
+    signal: ctx.signal,
   });
   if (!res.ok) return { outcome: "error", message: `GitHub API error: ${res.status}` };
 
@@ -43,7 +44,7 @@ export const ciStatus: PrimitiveHandler = async (_op, params) => {
 };
 
 /** vcs.pr_status — check PR merge status */
-export const prStatus: PrimitiveHandler = async (_op, params) => {
+export const prStatus: PrimitiveHandler = async (_op, params, ctx) => {
   const token = getToken();
   const repo = params.repo as string;
   const pullNumber = Number(params.pullNumber);
@@ -51,6 +52,7 @@ export const prStatus: PrimitiveHandler = async (_op, params) => {
 
   const res = await fetch(`https://api.github.com/repos/${repo}/pulls/${pullNumber}`, {
     headers: GITHUB_HEADERS(token),
+    signal: ctx.signal,
   });
   if (!res.ok) return { outcome: "error", message: `GitHub API error: ${res.status}` };
 
@@ -62,7 +64,7 @@ export const prStatus: PrimitiveHandler = async (_op, params) => {
 };
 
 /** issue_tracker.comment_exists — check if a comment matching a pattern exists */
-export const commentExists: PrimitiveHandler = async (_op, params) => {
+export const commentExists: PrimitiveHandler = async (_op, params, ctx) => {
   const token = getToken();
   const repo = params.repo as string;
   const issueNumber = Number(params.issueNumber);
@@ -73,7 +75,7 @@ export const commentExists: PrimitiveHandler = async (_op, params) => {
 
   const res = await fetch(
     `https://api.github.com/repos/${repo}/issues/${issueNumber}/comments?per_page=100`,
-    { headers: GITHUB_HEADERS(token) },
+    { headers: GITHUB_HEADERS(token), signal: ctx.signal },
   );
   if (!res.ok) return { outcome: "error", message: `GitHub API error: ${res.status}` };
 
@@ -86,7 +88,7 @@ export const commentExists: PrimitiveHandler = async (_op, params) => {
 };
 
 /** vcs.pr_capacity — check if repo has capacity for more PRs */
-export const prCapacity: PrimitiveHandler = async (_op, params) => {
+export const prCapacity: PrimitiveHandler = async (_op, params, ctx) => {
   const token = getToken();
   const repo = params.repo as string;
   const max = Number(params.max ?? 4);
@@ -94,6 +96,7 @@ export const prCapacity: PrimitiveHandler = async (_op, params) => {
 
   const res = await fetch(`https://api.github.com/repos/${repo}/pulls?state=open&per_page=100`, {
     headers: GITHUB_HEADERS(token),
+    signal: ctx.signal,
   });
   if (!res.ok) return { outcome: "error", message: `GitHub API error: ${res.status}` };
 

@@ -105,7 +105,7 @@ describe("evaluateGate", () => {
   it("passes params and context to handler", async () => {
     let capturedOp: string | undefined;
     let capturedParams: Record<string, unknown> | undefined;
-    let capturedContext: { entityId: string } | undefined;
+    let capturedContext: { entityId: string; signal?: AbortSignal } | undefined;
 
     registerHandler("vcs.ci_status", async (op, params, context) => {
       capturedOp = op;
@@ -118,7 +118,8 @@ describe("evaluateGate", () => {
 
     expect(capturedOp).toBe("vcs.ci_status");
     expect(capturedParams).toEqual({ repo: "org/repo", pr: 42 });
-    expect(capturedContext).toEqual({ entityId: "entity-1" });
+    expect(capturedContext?.entityId).toBe("entity-1");
+    expect(capturedContext?.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("defaults message to empty string when handler omits it", async () => {
