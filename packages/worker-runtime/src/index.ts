@@ -3,7 +3,7 @@ export { makeHandler } from "./server.js";
 export type {
   DispatchRequest,
   ErrorEvent,
-  NukeEvent,
+  HolyshipperEvent,
   ResultEvent,
   SessionEvent,
   SystemEvent,

@@ -16,9 +16,9 @@ RUN npm install --production
 
 RUN mkdir -p /run/secrets
 
-RUN addgroup -S nuke && adduser -S nuke -G nuke
-RUN mkdir -p /home/nuke/.claude /workspace && chown -R nuke:nuke /home/nuke /workspace
-USER nuke
+RUN addgroup -S holyshipper && adduser -S holyshipper -G holyshipper
+RUN mkdir -p /home/holyshipper/.claude /workspace && chown -R holyshipper:holyshipper /home/holyshipper /workspace
+USER holyshipper
 
 WORKDIR /workspace
 

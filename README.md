@@ -1,4 +1,4 @@
-# NUKE — Agent Containers
+# HOLYSHIPPER — Agent Containers
 
 > The warheads in the WOPR stack. Docker containers that run Claude agents for a single invocation, stream results back to RADAR via SSE, and die.
 
@@ -6,9 +6,9 @@
 
 ## What This Is
 
-NUKE is the agent container runtime for the [WOPR](https://github.com/wopr-network) agentic engineering pipeline. Each nuke is one agent invocation — an architect writing a spec, a coder implementing a feature, a reviewer reading a diff, a fixer addressing findings.
+HOLYSHIPPER is the agent container runtime for the [WOPR](https://github.com/wopr-network) agentic engineering pipeline. Each holyshipper is one agent invocation — an architect writing a spec, a coder implementing a feature, a reviewer reading a diff, a fixer addressing findings.
 
-RADAR launches nukes. NORAD watches them. DEFCON decides if their output earns escalation. The nuke does the work.
+RADAR launches holyshippers. NORAD watches them. DEFCON decides if their output earns escalation. The holyshipper does the work.
 
 **You fork this repo** to customize what's installed in your agent containers. A Python shop adds `pip`, `pytest`, `ruff`. A Rust shop adds `cargo`, `clippy`. The worker-runtime is shared — the tooling is yours.
 
@@ -21,7 +21,7 @@ packages/
   worker-runtime/       HTTP server + SSE streaming + signal parsing
     src/
       server.ts         POST /dispatch, GET /health
-      types.ts          DispatchRequest, NukeEvent (SSE event union)
+      types.ts          DispatchRequest, HolyshipperEvent (SSE event union)
       parse-signal.ts   Extract signal + artifacts from agent output
       index.ts          Public export surface (parseSignal, makeHandler, types)
       main.ts           Entrypoint (createServer, listen on PORT)
@@ -48,7 +48,7 @@ Each discipline gets its own Dockerfile. The Dockerfile installs:
 2. **Claude stack** — `@anthropic-ai/claude-code`, `@anthropic-ai/claude-agent-sdk`, `mcp-remote`
 3. **Worker runtime** — copied from `packages/worker-runtime/`
 
-The container runs as a non-root `nuke` user with `/workspace` as the working directory.
+The container runs as a non-root `holyshipper` user with `/workspace` as the working directory.
 
 ---
 
@@ -84,7 +84,7 @@ For continue dispatches (multi-turn within the same entity):
 
 ### SSE Response
 
-The nuke streams Server-Sent Events back to RADAR:
+The holyshipper streams Server-Sent Events back to RADAR:
 
 ```
 data: {"type":"session","sessionId":"abc-123"}
@@ -176,7 +176,7 @@ Containers are **stateful within an entity** — the session persists across con
    RUN npm install --production
    ```
 6. Set up the non-root user, secrets mount, and entrypoint (see existing Dockerfiles)
-7. Build: `docker build -f workers/my-discipline/Dockerfile -t nuke-my-discipline .`
+7. Build: `docker build -f workers/my-discipline/Dockerfile -t holyshipper-my-discipline .`
 
 ---
 
@@ -204,12 +204,12 @@ pnpm check
 
 ## The Stack
 
-NUKE is one piece of the WOPR agentic engineering pipeline:
+HOLYSHIPPER is one piece of the WOPR agentic engineering pipeline:
 
 - [WOPR](https://github.com/wopr-network/wopr) — the AI
 - [DEFCON](https://github.com/wopr-network/defcon) — the state machine engine
 - [RADAR](https://github.com/wopr-network/radar) — detection and dispatch
-- **NUKE** (this repo) — agent containers
+- **HOLYSHIPPER** (this repo) — agent containers
 - [NORAD](https://github.com/wopr-network/norad) — the command center dashboard
 - [Bunker](https://github.com/wopr-network/bunker) — flow definitions and reference implementation
 

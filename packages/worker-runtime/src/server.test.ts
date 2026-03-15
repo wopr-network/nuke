@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const execFileAsync = promisify(execFile);
 
 // Redirect homedir() to a temp directory so tests never touch real credentials
-const fakeHome = mkdtempSync(join(tmpdir(), "nuke-test-"));
+const fakeHome = mkdtempSync(join(tmpdir(), "holyshipper-test-"));
 vi.mock("node:os", async () => {
   const actual = await vi.importActual<typeof import("node:os")>("node:os");
   return { ...actual, homedir: () => fakeHome };
@@ -357,7 +357,7 @@ describe("POST /checkout", () => {
   });
 
   it("returns 500 when workspace is not writable (default /workspace path)", async () => {
-    // No NUKE_WORKSPACE set — falls back to /workspace which is not writable in test env
+    // No HOLYSHIPPER_WORKSPACE set — falls back to /workspace which is not writable in test env
     const res = await fetch(`${url}/checkout`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -369,14 +369,14 @@ describe("POST /checkout", () => {
   });
 
   it("returns 500 when gh clone fails for nonexistent remote repo", async () => {
-    const wsDir = mkdtempSync(join(tmpdir(), "nuke-ws-"));
-    process.env.NUKE_WORKSPACE = wsDir;
+    const wsDir = mkdtempSync(join(tmpdir(), "holyshipper-ws-"));
+    process.env.HOLYSHIPPER_WORKSPACE = wsDir;
     const res = await fetch(`${url}/checkout`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repo: "nonexistent/repo-that-will-fail", branch: "test-branch" }),
     });
-    delete process.env.NUKE_WORKSPACE;
+    delete process.env.HOLYSHIPPER_WORKSPACE;
     expect(res.status).toBe(500);
     const body = (await res.json()) as { error: string };
     expect(body.error).toBeDefined();
@@ -406,7 +406,7 @@ describe("POST /checkout", () => {
     delete process.env.GH_TOKEN;
     delete process.env.GITHUB_TOKEN;
 
-    const tmpDir = mkdtempSync(join(tmpdir(), "nuke-notoken-"));
+    const tmpDir = mkdtempSync(join(tmpdir(), "holyshipper-notoken-"));
     const bareDir = join(tmpDir, "test-repo");
     const workDir = join(tmpDir, "work");
     await execFileAsync("git", ["init", "--bare", bareDir]);
@@ -416,14 +416,14 @@ describe("POST /checkout", () => {
     await execFileAsync("git", ["-C", workDir, "commit", "--allow-empty", "-m", "init"]);
     await execFileAsync("git", ["-C", workDir, "push", "origin", "HEAD:main"]);
 
-    const wsDir = mkdtempSync(join(tmpdir(), "nuke-ws-"));
-    process.env.NUKE_WORKSPACE = wsDir;
+    const wsDir = mkdtempSync(join(tmpdir(), "holyshipper-ws-"));
+    process.env.HOLYSHIPPER_WORKSPACE = wsDir;
     const res = await fetch(`${url}/checkout`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repo: bareDir }),
     });
-    delete process.env.NUKE_WORKSPACE;
+    delete process.env.HOLYSHIPPER_WORKSPACE;
     process.env.GH_TOKEN = origGH;
     process.env.GITHUB_TOKEN = origGithub;
 
@@ -478,7 +478,7 @@ describe("POST /checkout", () => {
   });
 
   it("clones a local repo and returns worktrees map", async () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), "nuke-clone-"));
+    const tmpDir = mkdtempSync(join(tmpdir(), "holyshipper-clone-"));
     const bareDir = join(tmpDir, "test-repo");
     const workDir = join(tmpDir, "work");
 
@@ -489,15 +489,15 @@ describe("POST /checkout", () => {
     await execFileAsync("git", ["-C", workDir, "commit", "--allow-empty", "-m", "init"]);
     await execFileAsync("git", ["-C", workDir, "push", "origin", "HEAD:main"]);
 
-    const wsDir = mkdtempSync(join(tmpdir(), "nuke-ws-"));
-    process.env.NUKE_WORKSPACE = wsDir;
+    const wsDir = mkdtempSync(join(tmpdir(), "holyshipper-ws-"));
+    process.env.HOLYSHIPPER_WORKSPACE = wsDir;
 
     const res = await fetch(`${url}/checkout`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repo: bareDir, branch: "feat-test" }),
     });
-    delete process.env.NUKE_WORKSPACE;
+    delete process.env.HOLYSHIPPER_WORKSPACE;
 
     expect(res.status).toBe(200);
     const body = (await res.json()) as { worktrees: Record<string, string>; worktreePath: string; branch: string };
@@ -507,7 +507,7 @@ describe("POST /checkout", () => {
   });
 
   it("fetches when worktree already exists and checks out existing branch", async () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), "nuke-fetch-"));
+    const tmpDir = mkdtempSync(join(tmpdir(), "holyshipper-fetch-"));
     const bareDir = join(tmpDir, "test-repo");
     const workDir = join(tmpDir, "work");
 
@@ -521,17 +521,17 @@ describe("POST /checkout", () => {
     await execFileAsync("git", ["-C", workDir, "checkout", "-b", "existing-branch"]);
     await execFileAsync("git", ["-C", workDir, "push", "origin", "existing-branch"]);
 
-    const wsDir = mkdtempSync(join(tmpdir(), "nuke-ws-"));
+    const wsDir = mkdtempSync(join(tmpdir(), "holyshipper-ws-"));
     // Pre-clone into the workspace so existsSync returns true
     await execFileAsync("git", ["clone", bareDir, join(wsDir, "test-repo")]);
 
-    process.env.NUKE_WORKSPACE = wsDir;
+    process.env.HOLYSHIPPER_WORKSPACE = wsDir;
     const res = await fetch(`${url}/checkout`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repo: bareDir, branch: "existing-branch" }),
     });
-    delete process.env.NUKE_WORKSPACE;
+    delete process.env.HOLYSHIPPER_WORKSPACE;
 
     expect(res.status).toBe(200);
     const body = (await res.json()) as { branch: string };
@@ -539,7 +539,7 @@ describe("POST /checkout", () => {
   });
 
   it("clones a ../relative-path repo", async () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), "nuke-dotdot-"));
+    const tmpDir = mkdtempSync(join(tmpdir(), "holyshipper-dotdot-"));
     const bareDir = join(tmpDir, "test-repo");
     const workDir = join(tmpDir, "work");
 
@@ -550,8 +550,8 @@ describe("POST /checkout", () => {
     await execFileAsync("git", ["-C", workDir, "commit", "--allow-empty", "-m", "init"]);
     await execFileAsync("git", ["-C", workDir, "push", "origin", "HEAD:main"]);
 
-    const wsDir = mkdtempSync(join(tmpdir(), "nuke-ws-"));
-    process.env.NUKE_WORKSPACE = wsDir;
+    const wsDir = mkdtempSync(join(tmpdir(), "holyshipper-ws-"));
+    process.env.HOLYSHIPPER_WORKSPACE = wsDir;
 
     // Use a path starting with ../  — server should use git clone not gh
     const nested = join(tmpDir, "nested");
@@ -565,13 +565,13 @@ describe("POST /checkout", () => {
       body: JSON.stringify({ repo: "../test-repo" }),
     });
     process.chdir(origCwd);
-    delete process.env.NUKE_WORKSPACE;
+    delete process.env.HOLYSHIPPER_WORKSPACE;
 
     expect(res.status).toBe(200);
   });
 
   it("clones a ./relative-path repo", async () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), "nuke-rel-"));
+    const tmpDir = mkdtempSync(join(tmpdir(), "holyshipper-rel-"));
     const bareDir = join(tmpDir, "test-repo");
     const workDir = join(tmpDir, "work");
 
@@ -582,8 +582,8 @@ describe("POST /checkout", () => {
     await execFileAsync("git", ["-C", workDir, "commit", "--allow-empty", "-m", "init"]);
     await execFileAsync("git", ["-C", workDir, "push", "origin", "HEAD:main"]);
 
-    const wsDir = mkdtempSync(join(tmpdir(), "nuke-ws-"));
-    process.env.NUKE_WORKSPACE = wsDir;
+    const wsDir = mkdtempSync(join(tmpdir(), "holyshipper-ws-"));
+    process.env.HOLYSHIPPER_WORKSPACE = wsDir;
 
     // Use a relative path starting with ./ — server should use git clone not gh
     const origCwd = process.cwd();
@@ -594,7 +594,7 @@ describe("POST /checkout", () => {
       body: JSON.stringify({ repo: "./test-repo" }),
     });
     process.chdir(origCwd);
-    delete process.env.NUKE_WORKSPACE;
+    delete process.env.HOLYSHIPPER_WORKSPACE;
 
     expect(res.status).toBe(200);
   });
@@ -606,12 +606,12 @@ describe("POST /checkout", () => {
     delete process.env.GITHUB_TOKEN;
 
     // Write a fake token to a temp file and point the server at it
-    const tokenFile = join(mkdtempSync(join(tmpdir(), "nuke-tok-")), "gh-token");
+    const tokenFile = join(mkdtempSync(join(tmpdir(), "holyshipper-tok-")), "gh-token");
     const { writeFileSync } = await import("node:fs");
     writeFileSync(tokenFile, "fake-token-from-file");
     process.env.GH_TOKEN_PATH_OVERRIDE = tokenFile;
 
-    const tmpDir = mkdtempSync(join(tmpdir(), "nuke-tok-repo-"));
+    const tmpDir = mkdtempSync(join(tmpdir(), "holyshipper-tok-repo-"));
     const bareDir = join(tmpDir, "test-repo");
     const workDir = join(tmpDir, "work");
     await execFileAsync("git", ["init", "--bare", bareDir]);
@@ -621,14 +621,14 @@ describe("POST /checkout", () => {
     await execFileAsync("git", ["-C", workDir, "commit", "--allow-empty", "-m", "init"]);
     await execFileAsync("git", ["-C", workDir, "push", "origin", "HEAD:main"]);
 
-    const wsDir = mkdtempSync(join(tmpdir(), "nuke-ws-"));
-    process.env.NUKE_WORKSPACE = wsDir;
+    const wsDir = mkdtempSync(join(tmpdir(), "holyshipper-ws-"));
+    process.env.HOLYSHIPPER_WORKSPACE = wsDir;
     const res = await fetch(`${url}/checkout`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repo: bareDir }),
     });
-    delete process.env.NUKE_WORKSPACE;
+    delete process.env.HOLYSHIPPER_WORKSPACE;
     delete process.env.GH_TOKEN_PATH_OVERRIDE;
     process.env.GH_TOKEN = origGH;
     process.env.GITHUB_TOKEN = origGithub;
@@ -637,7 +637,7 @@ describe("POST /checkout", () => {
   });
 
   it("clones with entityId and nests under entityId subdir", async () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), "nuke-entity-"));
+    const tmpDir = mkdtempSync(join(tmpdir(), "holyshipper-entity-"));
     const bareDir = join(tmpDir, "test-repo");
     const workDir = join(tmpDir, "work");
 
@@ -648,15 +648,15 @@ describe("POST /checkout", () => {
     await execFileAsync("git", ["-C", workDir, "commit", "--allow-empty", "-m", "init"]);
     await execFileAsync("git", ["-C", workDir, "push", "origin", "HEAD:main"]);
 
-    const wsDir = mkdtempSync(join(tmpdir(), "nuke-ws-"));
-    process.env.NUKE_WORKSPACE = wsDir;
+    const wsDir = mkdtempSync(join(tmpdir(), "holyshipper-ws-"));
+    process.env.HOLYSHIPPER_WORKSPACE = wsDir;
 
     const res = await fetch(`${url}/checkout`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repo: bareDir, entityId: "entity-123" }),
     });
-    delete process.env.NUKE_WORKSPACE;
+    delete process.env.HOLYSHIPPER_WORKSPACE;
 
     expect(res.status).toBe(200);
     const body = (await res.json()) as { worktreePath: string };
@@ -674,7 +674,7 @@ describe("POST /checkout", () => {
   });
 
   it("clones multiple local repos and returns worktrees map", async () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), "nuke-multi-"));
+    const tmpDir = mkdtempSync(join(tmpdir(), "holyshipper-multi-"));
 
     const makeRepo = async (name: string) => {
       const bareDir = join(tmpDir, name);
@@ -689,15 +689,15 @@ describe("POST /checkout", () => {
     };
 
     const [repo1, repo2] = await Promise.all([makeRepo("repo-a"), makeRepo("repo-b")]);
-    const wsDir = mkdtempSync(join(tmpdir(), "nuke-ws-"));
-    process.env.NUKE_WORKSPACE = wsDir;
+    const wsDir = mkdtempSync(join(tmpdir(), "holyshipper-ws-"));
+    process.env.HOLYSHIPPER_WORKSPACE = wsDir;
 
     const res = await fetch(`${url}/checkout`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repos: [repo1, repo2], branch: "feat-multi" }),
     });
-    delete process.env.NUKE_WORKSPACE;
+    delete process.env.HOLYSHIPPER_WORKSPACE;
 
     expect(res.status).toBe(200);
     const body = (await res.json()) as { worktrees: Record<string, string>; branch: string };

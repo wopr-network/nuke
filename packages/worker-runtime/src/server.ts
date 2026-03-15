@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { logger } from "./logger.js";
 import { parseSignal } from "./parse-signal.js";
-import type { DispatchRequest, NukeEvent } from "./types.js";
+import type { DispatchRequest, HolyshipperEvent } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -41,7 +41,7 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
-function sendSSE(res: ServerResponse, event: NukeEvent): void {
+function sendSSE(res: ServerResponse, event: HolyshipperEvent): void {
   res.write(`data: ${JSON.stringify(event)}\n\n`);
 }
 
@@ -50,7 +50,7 @@ async function resolveGhToken(): Promise<string | null> {
   // 1. Env var (set by credentials injection)
   if (process.env.GH_TOKEN) return process.env.GH_TOKEN;
   if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN;
-  // 2. Secrets file (mounted by NukeDispatcher; overridable in tests via GH_TOKEN_PATH_OVERRIDE)
+  // 2. Secrets file (mounted by HolyshipperDispatcher; overridable in tests via GH_TOKEN_PATH_OVERRIDE)
   const tokenPath = process.env.GH_TOKEN_PATH_OVERRIDE ?? GH_TOKEN_PATH;
   if (existsSync(tokenPath)) {
     return (await readFile(tokenPath, "utf-8")).trim();
@@ -372,7 +372,7 @@ async function handleCheckout(req: IncomingMessage, res: ServerResponse): Promis
   }
 
   // When entityId is provided, nest repos under WORKSPACE/entityId/
-  const workspace = process.env.NUKE_WORKSPACE ?? WORKSPACE;
+  const workspace = process.env.HOLYSHIPPER_WORKSPACE ?? WORKSPACE;
   const baseDir = safeEntityId ? join(workspace, safeEntityId) : workspace;
 
   logger.info(`[checkout] starting`, {

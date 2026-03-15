@@ -6,5 +6,5 @@ const port = Number(process.env.PORT ?? 8080);
 
 const server = createServer(makeHandler());
 server.listen(port, "0.0.0.0", () => {
-  logger.info(`[nuke] worker-runtime listening on :${port}`, { port });
+  logger.info(`[holyshipper] worker-runtime listening on :${port}`, { port });
 });

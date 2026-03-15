@@ -1,4 +1,4 @@
-# NUKE
+# HOLYSHIPPER
 
 Agent container runtime for the WOPR pipeline.
 
@@ -18,7 +18,7 @@ This runs biome lint + typecheck across all packages.
 
 ## Gotchas
 
-- **Non-root user**: Containers run as `nuke` user, not root. Claude credentials go in `/home/nuke/.claude/`.
+- **Non-root user**: Containers run as `holyshipper` user, not root. Claude credentials go in `/home/holyshipper/.claude/`.
 - **Signal parsing scans bottom-up**: `parseSignal()` reverses lines and returns first match. Last signal in output wins.
 - **Session persistence**: `sessionId` from the `session` SSE event must be passed back on continue dispatches. `newSession: true` starts fresh.
 - **LINEAR_API_KEY**: When set, the worker-runtime auto-configures a Linear MCP server via `mcp-remote`. No prompt configuration needed.
@@ -35,4 +35,3 @@ Use `jj` (Jujutsu) for all VCS operations instead of `git`:
 - `jj squash`, `jj rebase`, `jj edit` for history manipulation
 
 Fall back to `git` only for operations not yet supported by `jj`.
-

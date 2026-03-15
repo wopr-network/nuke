@@ -95,8 +95,8 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/wopr-nuke-${{ matrix.worker }}
-            ghcr.io/wopr-network/wopr-nuke-${{ matrix.worker }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/wopr-holyshipper-${{ matrix.worker }}
+            ghcr.io/wopr-network/wopr-holyshipper-${{ matrix.worker }}
           tags: |
             type=raw,value=latest
             type=sha,prefix=,format=short

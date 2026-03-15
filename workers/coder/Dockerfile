@@ -31,9 +31,9 @@ COPY packages/worker-runtime/dist /app/worker-runtime/dist
 RUN mkdir -p /run/secrets
 
 # Non-root user
-RUN groupadd -r nuke && useradd -r -g nuke -m nuke
-RUN mkdir -p /home/nuke/.claude /workspace && chown -R nuke:nuke /home/nuke /workspace
-USER nuke
+RUN groupadd -r holyshipper && useradd -r -g holyshipper -m holyshipper
+RUN mkdir -p /home/holyshipper/.claude /workspace && chown -R holyshipper:holyshipper /home/holyshipper /workspace
+USER holyshipper
 
 WORKDIR /workspace
 
