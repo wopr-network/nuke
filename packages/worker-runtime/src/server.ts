@@ -372,9 +372,6 @@ async function handleCheckout(req: IncomingMessage, res: ServerResponse): Promis
   }
 
   // When entityId is provided, nest repos under WORKSPACE/entityId/
-  if (process.env.NUKE_WORKSPACE && !process.env.HOLYSHIPPER_WORKSPACE) {
-    logger.warn("[checkout] NUKE_WORKSPACE is set but ignored; rename to HOLYSHIPPER_WORKSPACE");
-  }
   const workspace = process.env.HOLYSHIPPER_WORKSPACE ?? WORKSPACE;
   const baseDir = safeEntityId ? join(workspace, safeEntityId) : workspace;
 
