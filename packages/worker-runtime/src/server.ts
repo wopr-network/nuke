@@ -497,11 +497,17 @@ async function handleGate(req: IncomingMessage, res: ServerResponse): Promise<vo
     return;
   }
 
+  const rawParams = request.params;
+  if (rawParams != null && (typeof rawParams !== "object" || Array.isArray(rawParams))) {
+    res.writeHead(400).end("Invalid params");
+    return;
+  }
+
   const gateRequest: GateRequest = {
     gateId: request.gateId,
     entityId: request.entityId,
     op: request.op,
-    params: (request.params as Record<string, unknown>) ?? {},
+    params: (rawParams as Record<string, unknown>) ?? {},
     timeoutMs: typeof request.timeoutMs === "number" ? request.timeoutMs : undefined,
   };
 

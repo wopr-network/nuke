@@ -78,8 +78,8 @@ export const commentExists: PrimitiveHandler = async (_op, params) => {
   if (!res.ok) return { outcome: "error", message: `GitHub API error: ${res.status}` };
 
   const comments = (await res.json()) as Array<{ body: string }>;
-  const regex = new RegExp(pattern);
-  const found = comments.some((c) => regex.test(c.body));
+  // Use includes() instead of RegExp to avoid ReDoS from untrusted patterns
+  const found = comments.some((c) => c.body.includes(pattern));
   return found
     ? { outcome: "exists", message: "Matching comment found" }
     : { outcome: "not_found", message: "No matching comment" };
