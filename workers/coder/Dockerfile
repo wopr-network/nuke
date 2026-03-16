@@ -28,7 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && rm -rf /var/lib/apt/lists/*
 
 # OpenCode CLI — open source coding agent (replaces Claude Code)
-RUN npm install -g opencode
+RUN curl -fsSL https://opencode.ai/install | OPENCODE_INSTALL_DIR=/usr/local bash
 
 # Worker runtime — copy package.json + built dist from build stage
 COPY --from=build /build/packages/worker-runtime/package.json /app/worker-runtime/
