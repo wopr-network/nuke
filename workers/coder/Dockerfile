@@ -1,3 +1,15 @@
+# Build stage — compile worker-runtime TypeScript
+FROM node:24-slim AS build
+RUN npm install -g pnpm
+WORKDIR /build
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY packages/worker-runtime/package.json packages/worker-runtime/
+COPY packages/worker-runtime/tsconfig.json packages/worker-runtime/
+COPY packages/worker-runtime/src packages/worker-runtime/src
+RUN pnpm install --frozen-lockfile
+RUN pnpm -C packages/worker-runtime run build
+
+# Runtime stage
 FROM node:24-slim
 
 # System tools the coder discipline needs
@@ -18,11 +30,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # OpenCode CLI — open source coding agent (replaces Claude Code)
 RUN npm install -g opencode
 
-# Worker runtime — copy package.json + dist only (no pnpm artifacts)
-COPY packages/worker-runtime/package.json /app/worker-runtime/
+# Worker runtime — copy package.json + built dist from build stage
+COPY --from=build /build/packages/worker-runtime/package.json /app/worker-runtime/
 WORKDIR /app/worker-runtime
 RUN npm install --production
-COPY packages/worker-runtime/dist /app/worker-runtime/dist
+COPY --from=build /build/packages/worker-runtime/dist /app/worker-runtime/dist
 
 # Secrets mount point (populated at runtime)
 RUN mkdir -p /run/secrets
