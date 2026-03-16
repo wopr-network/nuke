@@ -43,7 +43,9 @@ async function getOpencode() {
       });
       try {
         _opencodeClient.server.close();
-      } catch { /* already dead */ }
+      } catch {
+        /* already dead */
+      }
       _opencodeClient = null;
     }
   }
@@ -396,13 +398,13 @@ async function handleDispatch(req: IncomingMessage, res: ServerResponse): Promis
     });
 
     // OpenCode server expects providerID/modelID as flat body fields, not nested in a model object.
-    // biome-ignore lint/suspicious/noExplicitAny: SDK types expect nested model, server wants flat fields
     const promptRes = await client.session.prompt({
       path: { id: ocSessionId },
       body: {
         providerID: model.providerID,
         modelID: model.modelID,
         parts: [{ type: "text" as const, text: data.prompt as string }],
+        // biome-ignore lint/suspicious/noExplicitAny: SDK types expect nested model, server wants flat fields
       } as any,
     });
 
