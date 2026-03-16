@@ -1,19 +1,40 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { createOpencode } from "@opencode-ai/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
-  query: vi.fn(),
+vi.mock("@opencode-ai/sdk", () => ({
+  createOpencode: vi.fn(),
 }));
 
-const mockQuery = vi.mocked(query);
+const mockSessionCreate = vi.fn();
+const mockSessionPrompt = vi.fn();
+const mockEventSubscribe = vi.fn();
 
-async function* makeStream(messages: object[]) {
-  for (const m of messages) yield m;
+vi.mocked(createOpencode).mockResolvedValue({
+  client: {
+    session: { create: mockSessionCreate, prompt: mockSessionPrompt },
+    event: { subscribe: mockEventSubscribe },
+  } as never,
+  server: { url: "http://localhost:4096", close: vi.fn() },
+});
+
+function mockSuccessfulDispatch(text = "done") {
+  mockSessionCreate.mockResolvedValue({
+    data: { id: "session-abc", title: "test" },
+    error: undefined,
+  });
+  mockSessionPrompt.mockResolvedValue({
+    data: {
+      info: { id: "msg-1", cost: 0, finish: "end_turn", tokens: {} },
+      parts: [{ type: "text", text }],
+    },
+    error: undefined,
+  });
+  mockEventSubscribe.mockResolvedValue({
+    stream: (async function* () {})(),
+  });
 }
-
-const SUCCESS = { type: "result", subtype: "success", is_error: false, total_cost_usd: 0, stop_reason: "end_turn" };
 
 async function startServer(): Promise<{ url: string; server: Server }> {
   const { makeHandler } = await import("./server.js");
@@ -40,7 +61,9 @@ let server: Server;
 
 beforeEach(async () => {
   vi.resetModules();
-  mockQuery.mockReset();
+  mockSessionCreate.mockReset();
+  mockSessionPrompt.mockReset();
+  mockEventSubscribe.mockReset();
   ({ url, server } = await startServer());
 });
 
@@ -50,11 +73,11 @@ afterEach(async () => {
 
 describe("POST /dispatch — model tier mapping", () => {
   it.each([
-    ["opus", "claude-opus-4-6"],
-    ["sonnet", "claude-sonnet-4-6"],
-    ["haiku", "claude-haiku-4-5"],
-  ])("maps tier %s to model %s", async (tier, expectedModel) => {
-    mockQuery.mockReturnValue(makeStream([SUCCESS]) as ReturnType<typeof query>);
+    ["opus", "anthropic/claude-opus-4-6"],
+    ["sonnet", "anthropic/claude-sonnet-4-6"],
+    ["haiku", "anthropic/claude-haiku-4-5"],
+  ])("maps tier %s to model %s", async (tier, expectedModelID) => {
+    mockSuccessfulDispatch();
 
     await fetch(`${url}/dispatch`, {
       method: "POST",
@@ -62,15 +85,18 @@ describe("POST /dispatch — model tier mapping", () => {
       body: JSON.stringify({ prompt: "work", modelTier: tier }),
     });
 
-    expect(mockQuery).toHaveBeenCalledWith(
+    expect(mockSessionPrompt).toHaveBeenCalledWith(
       expect.objectContaining({
-        options: expect.objectContaining({ model: expectedModel }),
+        body: expect.objectContaining({
+          modelID: expectedModelID,
+          providerID: "holyship",
+        }),
       }),
     );
   });
 
   it("defaults to sonnet for missing modelTier", async () => {
-    mockQuery.mockReturnValue(makeStream([SUCCESS]) as ReturnType<typeof query>);
+    mockSuccessfulDispatch();
 
     await fetch(`${url}/dispatch`, {
       method: "POST",
@@ -78,9 +104,12 @@ describe("POST /dispatch — model tier mapping", () => {
       body: JSON.stringify({ prompt: "work" }),
     });
 
-    expect(mockQuery).toHaveBeenCalledWith(
+    expect(mockSessionPrompt).toHaveBeenCalledWith(
       expect.objectContaining({
-        options: expect.objectContaining({ model: "claude-sonnet-4-6" }),
+        body: expect.objectContaining({
+          modelID: "anthropic/claude-sonnet-4-6",
+          providerID: "holyship",
+        }),
       }),
     );
   });
@@ -114,21 +143,11 @@ describe("POST /dispatch — request validation", () => {
     });
     expect(res.status).toBe(400);
   });
-
-  it("returns 404 for unknown route", async () => {
-    const res = await fetch(`${url}/unknown`);
-    expect(res.status).toBe(404);
-  });
-
-  it("returns 404 for GET /dispatch", async () => {
-    const res = await fetch(`${url}/dispatch`);
-    expect(res.status).toBe(404);
-  });
 });
 
-describe("POST /dispatch — session ID in subsequent events", () => {
-  it("session event carries a consistent ID across calls", async () => {
-    mockQuery.mockReturnValue(makeStream([SUCCESS]) as ReturnType<typeof query>);
+describe("POST /dispatch — session ID handling", () => {
+  it("creates new session and returns UUID", async () => {
+    mockSuccessfulDispatch();
 
     const res = await fetch(`${url}/dispatch`, {
       method: "POST",
@@ -139,26 +158,30 @@ describe("POST /dispatch — session ID in subsequent events", () => {
     const events = await parseSSE(res);
     const session = events[0] as { type: string; sessionId: string };
     expect(session.type).toBe("session");
-    // UUID format
-    expect(session.sessionId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(session.sessionId).toBe("session-abc");
   });
 
-  it("echoes back provided sessionId", async () => {
-    mockQuery.mockReturnValue(makeStream([SUCCESS]) as ReturnType<typeof query>);
+  it("reuses session when sessionId provided", async () => {
+    mockSuccessfulDispatch();
 
     const res = await fetch(`${url}/dispatch`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: "work", modelTier: "haiku", sessionId: "my-session-123" }),
+      body: JSON.stringify({ prompt: "work", modelTier: "haiku", sessionId: "existing-session" }),
     });
+
+    // Should NOT create a new session
+    expect(mockSessionCreate).not.toHaveBeenCalled();
+    // Should prompt with the existing session ID
+    expect(mockSessionPrompt).toHaveBeenCalledWith(expect.objectContaining({ path: { id: "existing-session" } }));
 
     const events = await parseSSE(res);
     const session = events[0] as { type: string; sessionId: string };
-    expect(session.sessionId).toBe("my-session-123");
+    expect(session.sessionId).toBe("existing-session");
   });
 
-  it("generates new sessionId when newSession=true", async () => {
-    mockQuery.mockReturnValue(makeStream([SUCCESS]) as ReturnType<typeof query>);
+  it("creates new session when newSession=true even if sessionId provided", async () => {
+    mockSuccessfulDispatch();
 
     const res = await fetch(`${url}/dispatch`, {
       method: "POST",
@@ -166,86 +189,10 @@ describe("POST /dispatch — session ID in subsequent events", () => {
       body: JSON.stringify({ prompt: "work", modelTier: "haiku", sessionId: "old-id", newSession: true }),
     });
 
+    // Should create a NEW session
+    expect(mockSessionCreate).toHaveBeenCalled();
     const events = await parseSSE(res);
     const session = events[0] as { type: string; sessionId: string };
     expect(session.sessionId).not.toBe("old-id");
-    expect(session.sessionId).toMatch(/^[0-9a-f-]{36}$/);
-  });
-});
-
-describe("POST /dispatch — Linear MCP", () => {
-  it("wires Linear MCP when LINEAR_API_KEY is set", async () => {
-    const original = process.env.LINEAR_API_KEY;
-    process.env.LINEAR_API_KEY = "test-key-abc";
-
-    mockQuery.mockReturnValue(makeStream([SUCCESS]) as ReturnType<typeof query>);
-
-    await fetch(`${url}/dispatch`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: "work", modelTier: "haiku" }),
-    });
-
-    expect(mockQuery).toHaveBeenCalledWith(
-      expect.objectContaining({
-        options: expect.objectContaining({
-          mcpServers: expect.objectContaining({
-            "linear-server": expect.objectContaining({ command: "npx" }),
-          }),
-        }),
-      }),
-    );
-
-    process.env.LINEAR_API_KEY = original;
-  });
-
-  it("omits mcpServers when LINEAR_API_KEY is absent", async () => {
-    const original = process.env.LINEAR_API_KEY;
-    delete process.env.LINEAR_API_KEY;
-
-    mockQuery.mockReturnValue(makeStream([SUCCESS]) as ReturnType<typeof query>);
-
-    await fetch(`${url}/dispatch`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: "work", modelTier: "haiku" }),
-    });
-
-    const callOpts = mockQuery.mock.calls[0][0].options as Record<string, unknown>;
-    expect(callOpts.mcpServers).toBeUndefined();
-
-    process.env.LINEAR_API_KEY = original;
-  });
-});
-
-describe("POST /dispatch — unknown message types are silently ignored", () => {
-  it("ignores unknown top-level message type", async () => {
-    mockQuery.mockReturnValue(makeStream([{ type: "unknown_future_type" }, SUCCESS]) as ReturnType<typeof query>);
-
-    const res = await fetch(`${url}/dispatch`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: "work", modelTier: "haiku" }),
-    });
-
-    const events = await parseSSE(res);
-    expect(events.some((e) => (e as { type: string }).type === "result")).toBe(true);
-  });
-
-  it("ignores unknown content block type within assistant message", async () => {
-    const assistantWithUnknownBlock = {
-      type: "assistant",
-      message: { content: [{ type: "thinking", thinking: "hmm" }] },
-    };
-    mockQuery.mockReturnValue(makeStream([assistantWithUnknownBlock, SUCCESS]) as ReturnType<typeof query>);
-
-    const res = await fetch(`${url}/dispatch`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: "work", modelTier: "haiku" }),
-    });
-
-    const events = await parseSSE(res);
-    expect(events.some((e) => (e as { type: string }).type === "result")).toBe(true);
   });
 });

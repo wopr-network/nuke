@@ -15,11 +15,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && apt-get update && apt-get install -y --no-install-recommends gh \
   && rm -rf /var/lib/apt/lists/*
 
-# Claude Code CLI + Agent SDK + MCP bridge
-RUN npm install -g \
-  @anthropic-ai/claude-code \
-  @anthropic-ai/claude-agent-sdk \
-  mcp-remote
+# OpenCode CLI — open source coding agent (replaces Claude Code)
+RUN npm install -g opencode
 
 # Worker runtime — copy package.json + dist only (no pnpm artifacts)
 COPY packages/worker-runtime/package.json /app/worker-runtime/
@@ -27,12 +24,12 @@ WORKDIR /app/worker-runtime
 RUN npm install --production
 COPY packages/worker-runtime/dist /app/worker-runtime/dist
 
-# Secrets mount point (populated by radar at runtime)
+# Secrets mount point (populated at runtime)
 RUN mkdir -p /run/secrets
 
 # Non-root user
 RUN groupadd -r holyshipper && useradd -r -g holyshipper -m holyshipper
-RUN mkdir -p /home/holyshipper/.claude /workspace && chown -R holyshipper:holyshipper /home/holyshipper /workspace
+RUN mkdir -p /home/holyshipper/.config/opencode /workspace && chown -R holyshipper:holyshipper /home/holyshipper /workspace
 USER holyshipper
 
 WORKDIR /workspace

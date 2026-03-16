@@ -10,7 +10,7 @@
     "check": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.71",
+    "@opencode-ai/sdk": "^1.2.27",
     "winston": "^3.19.0"
   },
   "devDependencies": {

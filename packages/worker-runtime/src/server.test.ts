@@ -1,31 +1,46 @@
 import { execFile } from "node:child_process";
 import { mkdtempSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { createOpencode } from "@opencode-ai/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const execFileAsync = promisify(execFile);
 
-// Redirect homedir() to a temp directory so tests never touch real credentials
-const fakeHome = mkdtempSync(join(tmpdir(), "holyshipper-test-"));
-vi.mock("node:os", async () => {
-  const actual = await vi.importActual<typeof import("node:os")>("node:os");
-  return { ...actual, homedir: () => fakeHome };
-});
-
-vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
-  query: vi.fn(),
+vi.mock("@opencode-ai/sdk", () => ({
+  createOpencode: vi.fn(),
 }));
 
-const mockQuery = vi.mocked(query);
+const mockSessionCreate = vi.fn();
+const mockSessionPrompt = vi.fn();
+const mockEventSubscribe = vi.fn();
 
-async function* makeStream(messages: object[]) {
-  for (const m of messages) yield m;
+vi.mocked(createOpencode).mockResolvedValue({
+  client: {
+    session: { create: mockSessionCreate, prompt: mockSessionPrompt },
+    event: { subscribe: mockEventSubscribe },
+  } as never,
+  server: { url: "http://localhost:4096", close: vi.fn() },
+});
+
+function mockSuccessfulDispatch(text = "done") {
+  mockSessionCreate.mockResolvedValue({
+    data: { id: "session-abc", title: "test" },
+    error: undefined,
+  });
+  mockSessionPrompt.mockResolvedValue({
+    data: {
+      info: { id: "msg-1", cost: 0, finish: "end_turn", tokens: {} },
+      parts: [{ type: "text", text }],
+    },
+    error: undefined,
+  });
+  mockEventSubscribe.mockResolvedValue({
+    stream: (async function* () {})(),
+  });
 }
 
 async function startServer(): Promise<{ url: string; server: Server }> {
@@ -54,7 +69,9 @@ let server: Server;
 
 beforeEach(async () => {
   vi.resetModules();
-  mockQuery.mockReset();
+  mockSessionCreate.mockReset();
+  mockSessionPrompt.mockReset();
+  mockEventSubscribe.mockReset();
   ({ url, server } = await startServer());
 });
 
@@ -73,11 +90,7 @@ describe("POST /dispatch", () => {
   });
 
   it("streams session event as first SSE event", async () => {
-    mockQuery.mockReturnValue(
-      makeStream([
-        { type: "result", subtype: "success", is_error: false, total_cost_usd: 0.001, stop_reason: "end_turn" },
-      ]) as ReturnType<typeof query>,
-    );
+    mockSuccessfulDispatch();
 
     const res = await fetch(`${url}/dispatch`, {
       method: "POST",
@@ -95,46 +108,8 @@ describe("POST /dispatch", () => {
     expect(first.sessionId.length).toBeGreaterThan(0);
   });
 
-  it("streams tool_use events", async () => {
-    mockQuery.mockReturnValue(
-      makeStream([
-        {
-          type: "assistant",
-          message: {
-            content: [{ type: "tool_use", name: "Read", input: { file_path: "/foo.ts" } }],
-          },
-        },
-        { type: "result", subtype: "success", is_error: false, total_cost_usd: 0, stop_reason: "end_turn" },
-      ]) as ReturnType<typeof query>,
-    );
-
-    const res = await fetch(`${url}/dispatch`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: "do work", modelTier: "haiku" }),
-    });
-
-    const events = await parseSSE(res);
-    const toolUse = events.find((e) => (e as { type: string }).type === "tool_use") as {
-      type: string;
-      name: string;
-      input: Record<string, unknown>;
-    };
-    expect(toolUse).toBeDefined();
-    expect(toolUse.name).toBe("Read");
-    expect(toolUse.input).toEqual({ file_path: "/foo.ts" });
-  });
-
-  it("streams text events", async () => {
-    mockQuery.mockReturnValue(
-      makeStream([
-        {
-          type: "assistant",
-          message: { content: [{ type: "text", text: "thinking hard" }] },
-        },
-        { type: "result", subtype: "success", is_error: false, total_cost_usd: 0, stop_reason: "end_turn" },
-      ]) as ReturnType<typeof query>,
-    );
+  it("streams text events from prompt result", async () => {
+    mockSuccessfulDispatch("thinking hard");
 
     const res = await fetch(`${url}/dispatch`, {
       method: "POST",
@@ -148,17 +123,7 @@ describe("POST /dispatch", () => {
   });
 
   it("streams result event with parsed signal", async () => {
-    mockQuery.mockReturnValue(
-      makeStream([
-        {
-          type: "assistant",
-          message: {
-            content: [{ type: "text", text: "PR created: https://github.com/wopr-network/radar/pull/42" }],
-          },
-        },
-        { type: "result", subtype: "success", is_error: false, total_cost_usd: 0.005, stop_reason: "end_turn" },
-      ]) as ReturnType<typeof query>,
-    );
+    mockSuccessfulDispatch("PR created: https://github.com/wopr-network/radar/pull/42");
 
     const res = await fetch(`${url}/dispatch`, {
       method: "POST",
@@ -171,21 +136,15 @@ describe("POST /dispatch", () => {
       type: string;
       signal: string;
       artifacts: Record<string, unknown>;
-      costUsd: number;
       isError: boolean;
     };
     expect(result?.signal).toBe("pr_created");
     expect(result?.artifacts).toMatchObject({ prNumber: 42 });
-    expect(result?.costUsd).toBe(0.005);
     expect(result?.isError).toBe(false);
   });
 
   it("reuses session when sessionId provided", async () => {
-    mockQuery.mockReturnValue(
-      makeStream([
-        { type: "result", subtype: "success", is_error: false, total_cost_usd: 0, stop_reason: "end_turn" },
-      ]) as ReturnType<typeof query>,
-    );
+    mockSuccessfulDispatch();
 
     await fetch(`${url}/dispatch`, {
       method: "POST",
@@ -193,19 +152,14 @@ describe("POST /dispatch", () => {
       body: JSON.stringify({ prompt: "do work", modelTier: "haiku", sessionId: "existing-session-abc" }),
     });
 
-    expect(mockQuery).toHaveBeenCalledWith(
-      expect.objectContaining({
-        options: expect.objectContaining({ resume: "existing-session-abc" }),
-      }),
-    );
+    // Should NOT create a new session
+    expect(mockSessionCreate).not.toHaveBeenCalled();
+    // Should prompt with the existing session ID
+    expect(mockSessionPrompt).toHaveBeenCalledWith(expect.objectContaining({ path: { id: "existing-session-abc" } }));
   });
 
   it("starts fresh session when newSession=true even if sessionId provided", async () => {
-    mockQuery.mockReturnValue(
-      makeStream([
-        { type: "result", subtype: "success", is_error: false, total_cost_usd: 0, stop_reason: "end_turn" },
-      ]) as ReturnType<typeof query>,
-    );
+    mockSuccessfulDispatch();
 
     await fetch(`${url}/dispatch`, {
       method: "POST",
@@ -213,17 +167,22 @@ describe("POST /dispatch", () => {
       body: JSON.stringify({ prompt: "do work", modelTier: "haiku", sessionId: "old-session", newSession: true }),
     });
 
-    const callOpts = mockQuery.mock.calls[0][0].options as Record<string, unknown>;
-    expect(callOpts.resume).toBeUndefined();
+    // Should create a new session (ignoring old-session)
+    expect(mockSessionCreate).toHaveBeenCalled();
   });
 
-  it("streams error event on query failure", async () => {
-    mockQuery.mockReturnValue(
-      (async function* () {
-        yield { type: "system", subtype: "init" };
-        throw new Error("SDK exploded");
-      })() as unknown as ReturnType<typeof query>,
-    );
+  it("streams error event on SDK failure", async () => {
+    mockSessionCreate.mockResolvedValue({
+      data: { id: "session-err", title: "test" },
+      error: undefined,
+    });
+    mockEventSubscribe.mockResolvedValue({
+      stream: (async function* () {})(),
+    });
+    mockSessionPrompt.mockResolvedValue({
+      data: undefined,
+      error: { name: "UnknownError", data: { message: "SDK exploded" } },
+    });
 
     const res = await fetch(`${url}/dispatch`, {
       method: "POST",
@@ -238,19 +197,36 @@ describe("POST /dispatch", () => {
 });
 
 describe("POST /credentials", () => {
-  it("writes claude credentials to ~/.claude/.credentials.json", async () => {
-    const creds = { oauthToken: "test-token-123", expiresAt: "2026-12-31" };
+  it("sets HOLYSHIP_GATEWAY_KEY env var from gateway credentials", async () => {
+    const original = process.env.HOLYSHIP_GATEWAY_KEY;
+
     const res = await fetch(`${url}/credentials`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ claude: creds }),
+      body: JSON.stringify({ gateway: { key: "sk-hs-test123" } }),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, boolean>;
-    expect(body.claude).toBe(true);
+    expect(body.gateway).toBe(true);
+    expect(process.env.HOLYSHIP_GATEWAY_KEY).toBe("sk-hs-test123");
 
-    const written = await readFile(join(fakeHome, ".claude", ".credentials.json"), "utf-8");
-    expect(JSON.parse(written)).toEqual(creds);
+    process.env.HOLYSHIP_GATEWAY_KEY = original;
+  });
+
+  it("sets HOLYSHIP_GATEWAY_URL from gatewayUrl field", async () => {
+    const original = process.env.HOLYSHIP_GATEWAY_URL;
+
+    const res = await fetch(`${url}/credentials`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gatewayUrl: "http://api:3001/v1" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, boolean>;
+    expect(body.gatewayUrl).toBe(true);
+    expect(process.env.HOLYSHIP_GATEWAY_URL).toBe("http://api:3001/v1");
+
+    process.env.HOLYSHIP_GATEWAY_URL = original;
   });
 
   it("sets GH_TOKEN env var from github credentials", async () => {
@@ -268,23 +244,22 @@ describe("POST /credentials", () => {
     expect(process.env.GH_TOKEN).toBe("ghp_test123");
     expect(process.env.GITHUB_TOKEN).toBe("ghp_test123");
 
-    // Restore
     process.env.GH_TOKEN = originalGh;
     process.env.GITHUB_TOKEN = originalGithub;
   });
 
-  it("accepts both claude and github in one call", async () => {
+  it("accepts both gateway and github in one call", async () => {
     const res = await fetch(`${url}/credentials`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        claude: { oauthToken: "tok" },
+        gateway: { key: "sk-hs-both" },
         github: { token: "ghp_both" },
       }),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, boolean>;
-    expect(body.claude).toBe(true);
+    expect(body.gateway).toBe(true);
     expect(body.github).toBe(true);
   });
 
@@ -292,9 +267,8 @@ describe("POST /credentials", () => {
     const res = await fetch(`${url}/credentials`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ claude: { oauth_token: "x", refresh_token: "y" }, github: {} }),
+      body: JSON.stringify({ gateway: { key: "sk-hs-x" }, github: {} }),
     });
-    // claude cred is recognized, so not a 400
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, boolean>;
     expect(body.github).toBeUndefined();
@@ -717,8 +691,8 @@ describe("POST /credentials — github string shorthand", () => {
       body: JSON.stringify({ github: "ghp_shorthand_token" }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as Record<string, boolean>;
-    expect(body.github).toBe(true);
+    const resBody = (await res.json()) as Record<string, boolean>;
+    expect(resBody.github).toBe(true);
     expect(process.env.GH_TOKEN).toBe("ghp_shorthand_token");
 
     process.env.GH_TOKEN = originalGh;

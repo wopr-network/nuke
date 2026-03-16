@@ -1,12 +1,11 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import type { IncomingMessage, RequestListener, ServerResponse } from "node:http";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { createOpencode } from "@opencode-ai/sdk";
 import { evaluateGate, type GateRequest, listHandlers } from "./gates.js";
 import { logger } from "./logger.js";
 import { parseSignal } from "./parse-signal.js";
@@ -14,11 +13,111 @@ import type { DispatchRequest, HolyshipperEvent } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
-const MODEL_MAP: Record<DispatchRequest["modelTier"], string> = {
-  opus: "claude-opus-4-6",
-  sonnet: "claude-sonnet-4-6",
-  haiku: "claude-haiku-4-5",
+/**
+ * Model map: tier → OpenRouter model IDs.
+ * These go through our gateway, which proxies to OpenRouter.
+ * Note: providerID/modelID are sent as flat body fields (not nested in model object)
+ * because the OpenCode server API expects them at the body root level.
+ */
+const MODEL_MAP: Record<DispatchRequest["modelTier"], { providerID: string; modelID: string }> = {
+  opus: { providerID: "holyship", modelID: "anthropic/claude-opus-4-6" },
+  sonnet: { providerID: "holyship", modelID: "anthropic/claude-sonnet-4-6" },
+  haiku: { providerID: "holyship", modelID: "anthropic/claude-haiku-4-5" },
 };
+
+/**
+ * Lazily-initialized OpenCode client.
+ * The server starts once and the client is reused across dispatches.
+ * If the server process dies, we detect it on next call and re-init.
+ */
+let _opencodeClient: Awaited<ReturnType<typeof createOpencode>> | null = null;
+
+async function getOpencode() {
+  // Health check: if we have a client, verify the server is still alive
+  if (_opencodeClient) {
+    try {
+      await _opencodeClient.client.path.get();
+    } catch (err) {
+      logger.warn("[opencode] server health check failed, reinitializing", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      try {
+        _opencodeClient.server.close();
+      } catch {
+        /* already dead */
+      }
+      _opencodeClient = null;
+    }
+  }
+
+  if (_opencodeClient) return _opencodeClient;
+
+  const gatewayUrl = process.env.HOLYSHIP_GATEWAY_URL ?? "http://localhost:3001/v1";
+
+  logger.info("[opencode] initializing server", {
+    gatewayUrl,
+    hasGatewayKey: !!process.env.HOLYSHIP_GATEWAY_KEY,
+  });
+
+  // Write opencode.json so the Go server registers our custom provider.
+  // The Go server reads config from disk, not from the SDK config param.
+  // Models MUST be declared explicitly or the server returns ProviderModelNotFoundError.
+  const configPath = join(process.cwd(), "opencode.json");
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      $schema: "https://opencode.ai/config.json",
+      provider: {
+        holyship: {
+          npm: "@ai-sdk/openai-compatible",
+          name: "Holy Ship Gateway",
+          env: ["HOLYSHIP_GATEWAY_KEY"],
+          options: { baseURL: gatewayUrl },
+          models: {
+            "anthropic/claude-opus-4-6": { name: "Claude Opus" },
+            "anthropic/claude-sonnet-4-6": { name: "Claude Sonnet" },
+            "anthropic/claude-haiku-4-5": { name: "Claude Haiku" },
+            "openai/gpt-4o-mini": { name: "GPT-4o Mini" },
+            "openai/gpt-4o": { name: "GPT-4o" },
+            "nousresearch/hermes-3-llama-3.1-405b:free": { name: "Hermes 405B (free)" },
+          },
+        },
+      },
+    }),
+  );
+  logger.info("[opencode] wrote opencode.json", { configPath, gatewayUrl });
+
+  _opencodeClient = await createOpencode({ timeout: 15000 });
+
+  logger.info("[opencode] server started", { url: _opencodeClient.server.url });
+  return _opencodeClient;
+}
+
+/**
+ * Auto-accept a permission request.
+ * OpenCode pauses agent execution until permissions are responded to.
+ * In headless mode (holyshipper), we always accept.
+ */
+async function autoAcceptPermission(
+  client: Awaited<ReturnType<typeof createOpencode>>["client"],
+  sessionId: string,
+  permissionId: string,
+): Promise<void> {
+  try {
+    await client.postSessionIdPermissionsPermissionId({
+      path: { id: sessionId, permissionID: permissionId },
+      body: { response: "always" },
+    });
+    logger.info("[dispatch:permission] auto-accepted", { sessionId, permissionId });
+  } catch (err) {
+    logger.error("[dispatch:permission] auto-accept failed", {
+      sessionId,
+      permissionId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
 
 const MAX_BODY_SIZE = 1024 * 1024;
 const WORKSPACE = "/workspace";
@@ -87,147 +186,293 @@ async function handleDispatch(req: IncomingMessage, res: ServerResponse): Promis
   }
 
   const modelTier = (data.modelTier as DispatchRequest["modelTier"]) ?? "sonnet";
+  const model = MODEL_MAP[modelTier];
   const sessionId =
     data.newSession === true ? undefined : typeof data.sessionId === "string" ? data.sessionId : undefined;
 
   const promptPreview = (data.prompt as string).slice(0, 200);
   logger.info(`[dispatch] received`, {
     modelTier,
-    model: MODEL_MAP[modelTier],
+    model,
     sessionId: sessionId ?? "(new)",
     promptLength: (data.prompt as string).length,
     promptPreview,
   });
 
-  // For new sessions, generate a UUID and pass it to the SDK so both sides agree.
-  // For resumes, the caller-supplied sessionId is used as-is.
-  const resolvedSessionId = sessionId ?? randomUUID();
-
   const allText: string[] = [];
   const startTime = Date.now();
   let toolUseCount = 0;
   let textBlockCount = 0;
+  let resolvedSessionId = sessionId ?? "";
 
-  // Send SSE headers immediately, then emit session event as first payload.
+  // Send SSE headers immediately
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
   });
-  sendSSE(res, { type: "session", sessionId: resolvedSessionId });
 
   try {
-    const env = Object.fromEntries(
-      Object.entries(process.env).filter((e): e is [string, string] => e[1] !== undefined),
-    );
-    delete env.CLAUDECODE;
+    // Initialize OpenCode (lazy — first call starts the server)
+    const opencode = await getOpencode();
+    const { client } = opencode;
 
-    const linearApiKey = env.LINEAR_API_KEY;
-    const mcpServers = linearApiKey
-      ? {
-          "linear-server": {
-            type: "stdio" as const,
-            command: "npx",
-            args: [
-              "-y",
-              "mcp-remote",
-              "https://mcp.linear.app/mcp",
-              "--header",
-              `Authorization: Bearer ${linearApiKey}`,
-            ],
-            env,
-          },
-        }
-      : undefined;
-
-    if (mcpServers) {
-      logger.info(`[dispatch] MCP servers configured`, { servers: Object.keys(mcpServers) });
+    // Create or resume session
+    let ocSessionId: string;
+    if (sessionId) {
+      // Resume existing session
+      ocSessionId = sessionId;
+      logger.info(`[dispatch] resuming OpenCode session`, { sessionId });
+    } else {
+      const createRes = await client.session.create({
+        body: {
+          title: `holyshipper-${randomUUID().slice(0, 8)}`,
+        },
+      });
+      if (createRes.error) {
+        throw new Error(`Failed to create session: ${JSON.stringify(createRes.error)}`);
+      }
+      ocSessionId = createRes.data.id;
+      logger.info(`[dispatch] created OpenCode session`, {
+        sessionId: ocSessionId,
+        title: createRes.data.title,
+      });
     }
+    resolvedSessionId = ocSessionId;
+    sendSSE(res, { type: "session", sessionId: resolvedSessionId });
 
-    logger.info(`[dispatch] starting SDK query`, { model: MODEL_MAP[modelTier], resolvedSessionId });
+    // Subscribe to session events for real-time SSE streaming.
+    // The event stream runs as a background async iterator while prompt() blocks.
+    // This ensures tool_use and text events are forwarded to the caller in real-time.
+    logger.info(`[dispatch] subscribing to OpenCode events`, { sessionId: ocSessionId });
 
-    for await (const message of query({
-      prompt: data.prompt as string,
-      options: {
-        model: MODEL_MAP[modelTier],
-        permissionMode: "bypassPermissions",
-        // For new sessions, set the session ID so the SDK uses our UUID.
-        // For resumes, pass the same ID via `resume`.
-        ...(sessionId ? { resume: sessionId } : { sessionId: resolvedSessionId }),
-        ...(mcpServers ? { mcpServers } : {}),
-        env,
-        /* v8 ignore next */
-        stderr: (line: string) => logger.debug(`[sdk:stderr] ${line}`),
-      },
-    })) {
-      const msg = message as { type: string };
+    const eventAbort = new AbortController();
+    const eventStream = await client.event.subscribe({ signal: eventAbort.signal });
 
-      if (msg.type === "system") {
-        const m = msg as { type: string; subtype: string; session_id?: string };
-        logger.info(`[dispatch] system event`, { subtype: m.subtype, sessionId: resolvedSessionId });
-        sendSSE(res, { type: "system", subtype: m.subtype });
-      } else if (msg.type === "assistant") {
-        const m = msg as { type: string; message: { content: unknown[] } };
-        for (const block of m.message.content) {
-          const b = block as { type: string };
-          if (b.type === "tool_use") {
-            const t = b as { type: string; name: string; input: Record<string, unknown> };
-            toolUseCount++;
-            logger.info(`[dispatch] tool_use`, {
-              name: t.name,
-              toolUseCount,
-              inputKeys: Object.keys(t.input),
-            });
-            sendSSE(res, { type: "tool_use", name: t.name, input: t.input });
-          } else if (b.type === "text") {
-            const t = b as { type: string; text: string };
-            if (t.text) {
-              textBlockCount++;
-              allText.push(t.text);
-              logger.debug(`[dispatch] text block`, {
-                textBlockCount,
-                length: t.text.length,
-                preview: t.text.slice(0, 120),
-              });
-              sendSSE(res, { type: "text", text: t.text });
+    // Background event processor — runs concurrently with prompt()
+    const eventLoop = (async () => {
+      try {
+        for await (const evt of eventStream.stream) {
+          const event = evt as { type?: string; properties?: Record<string, unknown> };
+          if (!event?.type) continue;
+
+          const evtType = event.type;
+          const props = event.properties ?? {};
+
+          // Filter to our session only
+          const evtSessionId = props.sessionID as string | undefined;
+          if (evtSessionId && evtSessionId !== ocSessionId) continue;
+
+          logger.debug(`[dispatch:sse] ${evtType}`, {
+            sessionId: ocSessionId,
+            propertyKeys: Object.keys(props),
+          });
+
+          // ── message.part.updated — tool invocations + text blocks ──
+          if (evtType === "message.part.updated") {
+            const part = props.part as Record<string, unknown> | undefined;
+            if (!part) continue;
+            const partType = part.type as string;
+
+            if (partType === "tool") {
+              const toolName = (part.tool as string) ?? "unknown";
+              const state = part.state as Record<string, unknown> | undefined;
+              const status = (state?.status as string) ?? "unknown";
+
+              if (status === "pending" || status === "running") {
+                toolUseCount++;
+                logger.info(`[dispatch:sse] tool`, {
+                  name: toolName,
+                  status,
+                  toolUseCount,
+                  inputKeys: state?.input ? Object.keys(state.input as object) : [],
+                });
+                sendSSE(res, {
+                  type: "tool_use",
+                  name: toolName,
+                  input: (state?.input as Record<string, unknown>) ?? {},
+                });
+              } else if (status === "completed") {
+                logger.info(`[dispatch:sse] tool completed`, {
+                  name: toolName,
+                  title: (state?.title as string) ?? "",
+                });
+              } else if (status === "error") {
+                logger.error(`[dispatch:sse] tool error`, {
+                  name: toolName,
+                  error: (state?.error as string) ?? "unknown",
+                });
+              }
+            } else if (partType === "text") {
+              const text = (part.text as string) ?? "";
+              const delta = props.delta as string | undefined;
+              const content = delta ?? text;
+              if (content) {
+                textBlockCount++;
+                allText.push(content);
+                logger.debug(`[dispatch:sse] text`, {
+                  textBlockCount,
+                  length: content.length,
+                  preview: content.slice(0, 120),
+                });
+                sendSSE(res, { type: "text", text: content });
+              }
+            } else if (partType === "step-start" || partType === "step-finish") {
+              logger.info(`[dispatch:sse] ${partType}`, { sessionId: ocSessionId });
+              sendSSE(res, { type: "system", subtype: partType });
             }
           }
+
+          // ── message.updated — track message lifecycle ──
+          else if (evtType === "message.updated") {
+            const info = props.info as Record<string, unknown> | undefined;
+            if (info?.role === "assistant" && info?.time) {
+              const time = info.time as Record<string, unknown>;
+              if (time.completed) {
+                logger.info(`[dispatch:sse] assistant message completed`, {
+                  sessionId: ocSessionId,
+                  messageId: info.id,
+                  cost: info.cost,
+                  tokens: info.tokens,
+                  finish: info.finish,
+                });
+              }
+            }
+          }
+
+          // ── session.status ──
+          else if (evtType === "session.status") {
+            const status = props.status as Record<string, unknown> | undefined;
+            logger.info(`[dispatch:sse] session.status`, {
+              sessionId: ocSessionId,
+              status: status?.type ?? "unknown",
+            });
+          } else if (evtType === "session.idle") {
+            logger.info(`[dispatch:sse] session.idle`, { sessionId: ocSessionId });
+          }
+
+          // ── session.error ──
+          else if (evtType === "session.error") {
+            logger.error(`[dispatch:sse] session.error`, {
+              sessionId: ocSessionId,
+              properties: props,
+            });
+          }
+
+          // ── permission.updated — auto-accept so agent doesn't hang ──
+          else if (evtType === "permission.updated") {
+            const permissionId = props.id as string | undefined;
+            logger.warn(`[dispatch:sse] permission requested`, {
+              sessionId: ocSessionId,
+              permissionId,
+              tool: props.tool,
+            });
+            if (permissionId) {
+              void autoAcceptPermission(client, ocSessionId, permissionId);
+            }
+          }
+
+          // ── everything else — log for forensics ──
+          else {
+            logger.debug(`[dispatch:sse] unhandled event`, {
+              type: evtType,
+              sessionId: ocSessionId,
+            });
+          }
         }
-      } else if (msg.type === "result") {
-        const m = msg as {
-          type: string;
-          subtype: string;
-          is_error: boolean;
-          stop_reason: string | null;
-          total_cost_usd: number | null;
-        };
-        const { signal, artifacts } = parseSignal(allText.join("\n"));
-        const elapsed = Date.now() - startTime;
-        logger.info(`[dispatch] result`, {
-          subtype: m.subtype,
-          isError: m.is_error,
-          stopReason: m.stop_reason,
-          costUsd: m.total_cost_usd,
-          signal,
-          artifactKeys: Object.keys(artifacts),
-          toolUseCount,
-          textBlockCount,
-          elapsedMs: elapsed,
-        });
-        sendSSE(res, {
-          type: "result",
-          subtype: m.subtype,
-          isError: m.is_error,
-          stopReason: m.stop_reason,
-          costUsd: m.total_cost_usd,
-          signal,
-          artifacts,
+      } catch (err) {
+        // AbortError is expected when we cancel after prompt() returns
+        if (err instanceof Error && err.name === "AbortError") return;
+        logger.warn(`[dispatch:sse] event stream error`, {
+          error: err instanceof Error ? err.message : String(err),
+          sessionId: ocSessionId,
         });
       }
+    })();
+
+    // Send prompt — this blocks until the agent finishes
+    logger.info(`[dispatch] sending prompt to OpenCode`, {
+      sessionId: ocSessionId,
+      model,
+      promptLength: (data.prompt as string).length,
+    });
+
+    // OpenCode server expects providerID/modelID as flat body fields, not nested in a model object.
+    const promptRes = await client.session.prompt({
+      path: { id: ocSessionId },
+      body: {
+        providerID: model.providerID,
+        modelID: model.modelID,
+        parts: [{ type: "text" as const, text: data.prompt as string }],
+        // biome-ignore lint/suspicious/noExplicitAny: SDK types expect nested model, server wants flat fields
+      } as any,
+    });
+
+    if (promptRes.error) {
+      logger.error(`[dispatch] prompt returned error`, {
+        sessionId: ocSessionId,
+        error: promptRes.error,
+      });
+      throw new Error(`Prompt failed: ${JSON.stringify(promptRes.error)}`);
     }
+
+    const result = promptRes.data;
+
+    // Process the final result
+    const assistantInfo = result.info as Record<string, unknown> | undefined;
+    const resultParts = result.parts as Array<Record<string, unknown>> | undefined;
+
+    logger.info(`[dispatch] prompt completed`, {
+      sessionId: ocSessionId,
+      messageId: assistantInfo?.id,
+      cost: assistantInfo?.cost,
+      tokens: assistantInfo?.tokens,
+      finish: assistantInfo?.finish,
+      partCount: resultParts?.length ?? 0,
+    });
+
+    // Extract any text from result parts that weren't streamed via SSE
+    for (const part of resultParts ?? []) {
+      if (part.type === "text" && part.text) {
+        const text = part.text as string;
+        if (!allText.includes(text)) {
+          textBlockCount++;
+          allText.push(text);
+          sendSSE(res, { type: "text", text });
+        }
+      }
+    }
+
+    // Stop the event stream and wait for the background loop to drain
+    eventAbort.abort();
+    await eventLoop;
+
+    // Parse signal from all collected text
+    const { signal, artifacts } = parseSignal(allText.join("\n"));
+    const elapsed = Date.now() - startTime;
+
+    logger.info(`[dispatch] result`, {
+      signal,
+      artifactKeys: Object.keys(artifacts),
+      toolUseCount,
+      textBlockCount,
+      elapsedMs: elapsed,
+      sessionId: ocSessionId,
+      cost: assistantInfo?.cost,
+    });
+
+    sendSSE(res, {
+      type: "result",
+      subtype: "success",
+      isError: false,
+      stopReason: (assistantInfo?.finish as string) ?? "end_turn",
+      costUsd: (assistantInfo?.cost as number) ?? null,
+      signal,
+      artifacts,
+    });
   } catch (err) {
     const elapsed = Date.now() - startTime;
-    logger.error(`[dispatch] SDK error`, {
+    logger.error(`[dispatch] OpenCode error`, {
       error: err instanceof Error ? err.message : String(err),
       stack: err instanceof Error ? err.stack : undefined,
       toolUseCount,
@@ -278,13 +523,24 @@ async function handleCredentials(req: IncomingMessage, res: ServerResponse): Pro
 
   const results: Record<string, boolean> = {};
 
-  // Claude credentials
-  if (data.claude != null) {
-    const claudeDir = join(homedir(), ".claude");
-    await mkdir(claudeDir, { recursive: true });
-    await writeFile(join(claudeDir, ".credentials.json"), JSON.stringify(data.claude), "utf-8");
-    results.claude = true;
-    logger.info(`[credentials] claude credentials written`, { path: join(claudeDir, ".credentials.json") });
+  // Gateway service key — set env var so OpenCode provider picks it up
+  if (data.gateway != null) {
+    const gw = data.gateway as Record<string, unknown>;
+    const key = typeof gw === "string" ? gw : (gw.key as string);
+    if (key) {
+      process.env.HOLYSHIP_GATEWAY_KEY = key;
+      results.gateway = true;
+      logger.info(`[credentials] gateway key set`, { keyLength: key.length, keyPrefix: key.slice(0, 8) });
+    } else {
+      logger.warn(`[credentials] gateway payload present but no key found`);
+    }
+  }
+
+  // Gateway URL override
+  if (typeof data.gatewayUrl === "string" && data.gatewayUrl) {
+    process.env.HOLYSHIP_GATEWAY_URL = data.gatewayUrl;
+    results.gatewayUrl = true;
+    logger.info(`[credentials] gateway URL set`, { url: data.gatewayUrl });
   }
 
   // GitHub token — set env var so gh CLI and git pick it up
@@ -303,7 +559,7 @@ async function handleCredentials(req: IncomingMessage, res: ServerResponse): Pro
 
   if (Object.keys(results).length === 0) {
     logger.warn(`[credentials] no recognized credential types`, { receivedKeys: Object.keys(data) });
-    res.writeHead(400).end("No recognized credential types (expected: claude, github)");
+    res.writeHead(400).end("No recognized credential types (expected: gateway, github)");
     return;
   }
 
