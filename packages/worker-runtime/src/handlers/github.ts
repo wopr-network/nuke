@@ -25,7 +25,7 @@ export const ciStatus: PrimitiveHandler = async (_op, params, ctx) => {
   const ref = params.ref as string;
   if (!repo || !ref) return { outcome: "error", message: "Missing required params: repo, ref" };
 
-  const res = await fetch(`https://api.github.com/repos/${repo}/commits/${ref}/check-runs`, {
+  const res = await fetch(`https://api.github.com/repos/${repo}/commits/${ref}/check-runs?per_page=100`, {
     headers: GITHUB_HEADERS(token),
     signal: ctx.signal,
   });
