@@ -1,5 +1,5 @@
 # Build stage — compile worker-runtime TypeScript
-FROM node:24-alpine AS build
+FROM node:24-slim AS build
 RUN npm install -g pnpm
 WORKDIR /build
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
@@ -10,10 +10,14 @@ RUN pnpm install --frozen-lockfile
 RUN pnpm -C packages/worker-runtime run build
 
 # Runtime stage
-FROM node:24-alpine
+FROM node:24-slim
 
 # System tools the devops discipline needs
-RUN apk add --no-cache git curl
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  git \
+  curl \
+  ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
 
 # OpenCode CLI — open source coding agent (replaces Claude Code)
 RUN npm install -g opencode
@@ -26,7 +30,8 @@ COPY --from=build /build/packages/worker-runtime/dist /app/worker-runtime/dist
 
 RUN mkdir -p /run/secrets
 
-RUN addgroup -S holyshipper && adduser -S holyshipper -G holyshipper
+# Non-root user
+RUN groupadd -r holyshipper && useradd -r -g holyshipper -m holyshipper
 RUN mkdir -p /home/holyshipper/.config/opencode /workspace && chown -R holyshipper:holyshipper /home/holyshipper /workspace
 USER holyshipper
 
