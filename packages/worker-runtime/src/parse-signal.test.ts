@@ -110,6 +110,27 @@ describe("parseSignal", () => {
     expect(parseSignal("The docs_ready signal was emitted")).toEqual({ signal: "unknown", artifacts: {} });
   });
 
+  // engineering flow bare-word signals
+  it("parses bare spec_ready", () => {
+    expect(parseSignal("I posted the spec.\n\nspec_ready")).toEqual({ signal: "spec_ready", artifacts: {} });
+  });
+
+  it("parses bare ci_failed", () => {
+    expect(parseSignal("ci_failed")).toEqual({ signal: "ci_failed", artifacts: {} });
+  });
+
+  it("parses bare learned", () => {
+    expect(parseSignal("Updated CLAUDE.md with findings.\n\nlearned")).toEqual({ signal: "learned", artifacts: {} });
+  });
+
+  it("parses bare blocked", () => {
+    expect(parseSignal("blocked")).toEqual({ signal: "blocked", artifacts: {} });
+  });
+
+  it("parses bare closed", () => {
+    expect(parseSignal("closed")).toEqual({ signal: "closed", artifacts: {} });
+  });
+
   // wopr-incident signals
   it("parses triaged with severity", () => {
     const { signal, artifacts } = parseSignal("Triaged: WOP-500 severity=P1");
