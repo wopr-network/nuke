@@ -88,8 +88,7 @@ describe("POST /dispatch — model tier mapping", () => {
     expect(mockSessionPrompt).toHaveBeenCalledWith(
       expect.objectContaining({
         body: expect.objectContaining({
-          modelID: expectedModelID,
-          providerID: "holyship",
+          model: { providerID: "holyship", modelID: expectedModelID },
         }),
       }),
     );
@@ -107,8 +106,7 @@ describe("POST /dispatch — model tier mapping", () => {
     expect(mockSessionPrompt).toHaveBeenCalledWith(
       expect.objectContaining({
         body: expect.objectContaining({
-          modelID: "anthropic/claude-sonnet-4-6",
-          providerID: "holyship",
+          model: { providerID: "holyship", modelID: "anthropic/claude-sonnet-4-6" },
         }),
       }),
     );
