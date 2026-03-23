@@ -80,6 +80,8 @@ async function getOpencode() {
             "anthropic/claude-opus-4-6": { name: "Claude Opus" },
             "anthropic/claude-sonnet-4-6": { name: "Claude Sonnet" },
             "anthropic/claude-haiku-4-5": { name: "Claude Haiku" },
+            "deepseek/deepseek-v3.2": { name: "DeepSeek V3.2" },
+            "qwen/qwen3-coder": { name: "Qwen3 Coder" },
             "openai/gpt-4o-mini": { name: "GPT-4o Mini" },
             "openai/gpt-4o": { name: "GPT-4o" },
             "nousresearch/hermes-3-llama-3.1-405b:free": { name: "Hermes 405B (free)" },
