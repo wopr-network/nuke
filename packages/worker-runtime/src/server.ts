@@ -401,15 +401,12 @@ async function handleDispatch(req: IncomingMessage, res: ServerResponse): Promis
       promptLength: (data.prompt as string).length,
     });
 
-    // OpenCode server expects providerID/modelID as flat body fields, not nested in a model object.
     const promptRes = await client.session.prompt({
       path: { id: ocSessionId },
       body: {
-        providerID: model.providerID,
-        modelID: model.modelID,
+        model: { providerID: model.providerID, modelID: model.modelID },
         parts: [{ type: "text" as const, text: data.prompt as string }],
-        // biome-ignore lint/suspicious/noExplicitAny: SDK types expect nested model, server wants flat fields
-      } as any,
+      },
     });
 
     if (promptRes.error) {
