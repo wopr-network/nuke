@@ -2,7 +2,7 @@
 
 export interface DispatchRequest {
   prompt: string;
-  modelTier: "opus" | "sonnet" | "haiku" | "test";
+  modelTier: "opus" | "sonnet" | "haiku" | "deepseek" | "test";
   /** Omit or set false to start a fresh session */
   sessionId?: string | null;
   newSession?: boolean;

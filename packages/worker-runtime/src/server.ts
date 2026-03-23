@@ -23,6 +23,7 @@ const MODEL_MAP: Record<DispatchRequest["modelTier"], { providerID: string; mode
   opus: { providerID: "holyship", modelID: "anthropic/claude-opus-4-6" },
   sonnet: { providerID: "holyship", modelID: "anthropic/claude-sonnet-4-6" },
   haiku: { providerID: "holyship", modelID: "anthropic/claude-haiku-4-5" },
+  deepseek: { providerID: "holyship", modelID: "deepseek/deepseek-v3.2" },
   test: { providerID: "holyship", modelID: "qwen/qwen3-coder" },
 };
 
